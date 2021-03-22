@@ -163,7 +163,7 @@ model.compile(
 checkpoint_path = "training_1/cp.{epoch:04d}.ckpt"
 checkpoint_dir = os.path.dirname(checkpoint_path)
 
-model.save_weights(checkpoint_path.format(epoch=0))
+# model.save_weights(checkpoint_path.format(epoch=0))
 
 '''
 # used to retrieve the checkpoints
