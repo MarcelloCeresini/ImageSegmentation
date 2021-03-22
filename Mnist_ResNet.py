@@ -6,7 +6,9 @@ from tensorflow.keras import layers
 from tensorflow.keras.regularizers import l2
 from tensorflow.keras.activations import relu
 
+print()
 print("Num GPUs Available: ", len(tf.config.list_physical_devices('GPU')))
+print()
 
 (train_ds, test_ds), ds_info = tfds.load(
     "mnist",
