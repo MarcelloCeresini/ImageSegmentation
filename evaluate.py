@@ -13,14 +13,11 @@ test_ds, ds_info = tfds.load(
     with_info=True
 )
 
-print(ds_info)
-print(type(test_ds))
 
 def normalize_img(image, label):
     return tf.cast(image, tf.float32) / 255., label
 
-
-BATCH_SIZE = 128
+BATCH_SIZE = 64
 
 test_ds = test_ds.map(
     normalize_img, num_parallel_calls=tf.data.experimental.AUTOTUNE
@@ -30,7 +27,7 @@ test_ds = test_ds.cache()
 test_ds = test_ds.prefetch(tf.data.experimental.AUTOTUNE)
 
 # used to retrieve whole model (in case 100 EPOCHS are not enough, you can resume training from this model)
-model = tf.keras.models.load_model('saved_model/my_model')
+model = tf.keras.models.load_model('saved_model_big/my_model')
 
 result = model.evaluate(test_ds)
 
@@ -42,6 +39,5 @@ val = 0
 plot1 = plt.figure(1)
 plt.plot(history_dict["loss"][val:])
 plt.plot(history_dict["val_loss"][val:])
-
-print(result)
-print("a")
+plt.legend(["Train loss", "Validation loss"])
+plt.show()

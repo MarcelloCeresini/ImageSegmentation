@@ -1,5 +1,5 @@
 import os
-# os.environ['TF_CPP_MIN_LOG_LEVEL'] = '3'
+os.environ['TF_CPP_MIN_LOG_LEVEL'] = '3'
 import tensorflow as tf
 import tensorflow_datasets as tfds
 from tensorflow.keras import layers
@@ -122,25 +122,25 @@ def resnet():
     # 2nd stage
     x = res_conv(x, s=1, filters=(64, 256))
     x = res_identity(x, filters=(64, 256))
-    # x = res_identity(x, filters=(64, 256))
+    x = res_identity(x, filters=(64, 256))
 
     # 3rd stage
     x = res_conv(x, s=2, filters=(128, 512))
     x = res_identity(x, filters=(128, 512))
-    # x = res_identity(x, filters=(128, 512))
+    x = res_identity(x, filters=(128, 512))
 
     # 4th stage
     x = res_conv(x, s=2, filters=(256, 1024))
     x = res_identity(x, filters=(256, 1024))
-    # x = res_identity(x, filters=(256, 1024))
-    # x = res_identity(x, filters=(256, 1024))
-    # x = res_identity(x, filters=(256, 1024))
-    # x = res_identity(x, filters=(256, 1024))
+    x = res_identity(x, filters=(256, 1024))
+    x = res_identity(x, filters=(256, 1024))
+    x = res_identity(x, filters=(256, 1024))
+    x = res_identity(x, filters=(256, 1024))
 
     # 5th stage
     x = x = res_conv(x, s=2, filters=(512, 2048))
     x = res_identity(x, filters=(512, 2048))
-    # x = res_identity(x, filters=(512, 2048))
+    x = res_identity(x, filters=(512, 2048))
 
     # avg pooling + dense
     x = layers.AveragePooling2D(pool_size=(2, 2), padding="same")(x)
@@ -186,9 +186,9 @@ history = model.fit(
     ]
 )
 
-os.mkdir("saved_model")
-model.save('saved_model/my_model')
+os.mkdir("saved_model_big")
+model.save('saved_model_big/my_model')
 
 import json
-with open('saved_model/my_model/history.txt', 'w') as outfile:
+with open('saved_model_big/my_model/history.txt', 'w') as outfile:
     json.dump(history.history, outfile)
