@@ -1,6 +1,5 @@
 import os
-import matplotlib.pyplot as plt
-
+# os.environ['TF_CPP_MIN_LOG_LEVEL'] = '3'
 import tensorflow as tf
 import tensorflow_datasets as tfds
 from tensorflow.keras import layers
@@ -24,14 +23,11 @@ val_ds, ds_info_val = tfds.load(
 )
 
 
-BATCH_SIZE = 128
+BATCH_SIZE = 64
 input_shape = ds_info.features["image"].shape
 num_classes = ds_info.features["label"].num_classes
 num_examples_train = int(ds_info.splits["train"].num_examples * 0.8)
 num_examples_val = int(num_examples_train / 0.8 * 0.2)
-
-
-# num_examples_test = ds_info.splits["test"].num_examples
 
 
 def normalize_img(image, label):
@@ -164,7 +160,6 @@ model.compile(
 
 checkpoint_path = "training_1/cp.{epoch:04d}.ckpt"
 checkpoint_dir = os.path.dirname(checkpoint_path)
-save_frequency = 1
 
 model.save_weights(checkpoint_path.format(epoch=0))
 
@@ -182,23 +177,16 @@ history = model.fit(
     validation_batch_size=BATCH_SIZE,
     epochs=EPOCHS,
     callbacks=[
-        tf.keras.callbacks.EarlyStopping(monitor="val_loss", patience=5, restore_best_weights=True),
+        tf.keras.callbacks.EarlyStopping(monitor="val_loss", patience=3, restore_best_weights=True),
         tf.keras.callbacks.ModelCheckpoint(filepath=checkpoint_path,
                                            save_weights_only=True,
-                                           verbose=1,
-                                           save_freq=save_frequency * BATCH_SIZE)
+                                           verbose=1)
     ]
 )
-
-val = 0
-plot1 = plt.figure(1)
-plt.plot(history.history["loss"][val:])
-plt.plot(history.history["val_loss"][val:])
 
 os.mkdir("saved_model")
 model.save('saved_model/my_model')
 
-'''
-# used to retrieve whole model (in case 100 EPOCHS are not enough, you can resume training from this model)
-new_model = tf.keras.models.load_model('saved_model/my_model')
-'''
+import json
+with open('saved_model/my_model/history.txt', 'w') as outfile:
+    json.dump(history.history, outfile)
