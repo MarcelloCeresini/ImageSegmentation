@@ -10,6 +10,9 @@ print()
 print("Num GPUs Available: ", len(tf.config.list_physical_devices('GPU')))
 print()
 
+import sys
+sys.exit()
+
 (train_ds, test_ds), ds_info = tfds.load(
     "mnist",
     split=["train[:80%]", "test"],
