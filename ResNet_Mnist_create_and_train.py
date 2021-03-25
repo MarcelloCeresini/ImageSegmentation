@@ -67,17 +67,17 @@ def res_identity(x, filters):  # dimension does not change
     x_skip = x
     f1, f2 = filters
 
-    # first block
+    # first block --> bottleneck (reduces the depth, reduces parameters)
     x = layers.Conv2D(f1, kernel_size=(1, 1), strides=(1, 1), padding="valid", kernel_regularizer=l2(0.001))(x)
     x = layers.BatchNormalization()(x)
     x = layers.Activation(relu)(x)
 
-    # second block, BOTTLENECK (but size kept SAME WITH PADDING!)
+    # second block
     x = layers.Conv2D(f1, kernel_size=(3, 3), strides=(1, 1), padding="same", kernel_regularizer=l2(0.001))(x)
     x = layers.BatchNormalization()(x)
     x = layers.Activation(relu)(x)
 
-    # third block + input
+    # third block + input --> re-increment in depth
     x = layers.Conv2D(f2, kernel_size=(1, 1), strides=(1, 1), padding="valid", kernel_regularizer=l2(0.001))(x)
     x = layers.BatchNormalization()(x)
     x = layers.Add()([x, x_skip])
@@ -91,11 +91,11 @@ def res_conv(x, s, filters):  # dimension changes, divided by s
     f1, f2 = filters
 
     # first block
-    x = layers.Conv2D(f1, kernel_size=(1, 1), strides=(s, s), padding="valid", kernel_regularizer=l2(0.001))(x)
+    x = layers.Conv2D(f1, kernel_size=(1, 1), strides=(s, s), padding="same", kernel_regularizer=l2(0.001))(x)
     x = layers.BatchNormalization()(x)
     x = layers.Activation(relu)(x)
 
-    # second block, bottleneck, "same" padding
+    # second block
     x = layers.Conv2D(f1, kernel_size=(3, 3), strides=(1, 1), padding="same", kernel_regularizer=l2(0.001))(x)
     x = layers.BatchNormalization()(x)
     x = layers.Activation(relu)(x)
@@ -103,7 +103,7 @@ def res_conv(x, s, filters):  # dimension changes, divided by s
     # third block
     x = layers.Conv2D(f2, kernel_size=(1, 1), strides=(1, 1), padding="valid", kernel_regularizer=l2(0.001))(x)
     x = layers.BatchNormalization()(x)
-    x_skip = layers.Conv2D(f2, kernel_size=(1, 1), strides=(s, s), padding="valid", kernel_regularizer=l2(0.001))(
+    x_skip = layers.Conv2D(f2, kernel_size=(1, 1), strides=(s, s), padding="same", kernel_regularizer=l2(0.001))(
         x_skip)
     x_skip = layers.BatchNormalization()(x_skip)
     x = layers.Add()([x, x_skip])
