@@ -4,7 +4,7 @@ from keras import layers
 from keras.preprocessing.image import ImageDataGenerator
 from keras.models import Model
 from keras.callbacks import EarlyStopping, ModelCheckpoint
-from keras.optimizer import Adam
+from keras.optimizers import Adam
 from keras import metrics
 import os
 import numpy as np
