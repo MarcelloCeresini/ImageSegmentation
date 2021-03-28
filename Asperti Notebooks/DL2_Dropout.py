@@ -143,7 +143,7 @@ if not os.path.isdir(saveDir):
 
 #mixed_model.load_weights(saveDir + 'Cifar10_to256.hdf5')
 es_cb = EarlyStopping(monitor='val_loss', patience=3, verbose=1, mode='auto')
-chkpt = saveDir + 'Cifar10_to256.hdf5'
+chkpt = os.path.join(saveDir, 'Cifar10_to256.hdf5')
 cp_cb = ModelCheckpoint(filepath = chkpt, monitor='val_loss', verbose=1, save_best_only=True, mode='auto')
 
 mixed_model.fit(x_train, y_train,
