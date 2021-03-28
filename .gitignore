@@ -1,4 +1,10 @@
+## MODELS ##
 saved_model_big/
 saved_model/
-.vscode
+saved_models
+
+## VIRTUAL ENVS ##
 env
+
+## IDE STUFF ##
+.vscode
