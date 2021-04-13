@@ -8,3 +8,4 @@ env
 
 ## IDE STUFF ##
 .vscode
+.metals
