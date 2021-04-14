@@ -91,13 +91,13 @@ img = input_img_data[0]
 img = image.array_to_img(img)
 plt.figure(figsize=(10,5))
 
-ax = plt.subplot(1, 3, 1)
+ax = plt.subplot(1, 2, 1)
 plt.title("elephant")
 ax.get_xaxis().set_visible(False)
 ax.get_yaxis().set_visible(False)
 plt.imshow(xd)
 
-ax = plt.subplot(1, 3, 2)
+ax = plt.subplot(1, 2, 2)
 plt.imshow(img)
 plt.title("tiger shark")
 ax.get_xaxis().set_visible(False)
