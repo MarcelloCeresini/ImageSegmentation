@@ -1,14 +1,16 @@
 import os
 import random
-import datetime
+import time
+import matplotlib.pyplot as plt
+import matplotlib.image as mpimg
+import math
 import numpy as np
 import tensorflow as tf
-import keras
-import keras.backend as K
 import keras.layers as KL
 import keras.models as KM
 import keras.engine as KM
-from tensorflow.python.ops.gen_data_flow_ops import stage
+
+from skimage.transform import resize
 
 ### INPUT IMAGE RELATED CONSTANTS ###
 # Input image is resized using the "square" resizing mode from 
@@ -29,12 +31,22 @@ IMAGE_SHAPE = np.array([IMAGE_MAX_DIM, IMAGE_MAX_DIM, 3])
 # Whether to use Resnet50 or Resnet101
 BACKBONE_NETWORK = 'resnet50' # or 'resnet101'
 
+# Strides used for computing the shape of each stage of the backbone network
+# (when based on resnet50/101).
+# This is used for aligning proposals to the image. If the image is 1024x1024,
+# the 4 means that the first feature map P2 will be 1024/4 = 256x256. In the 
+# second one we divide by 8 and so on. The last feature map (P6) is 1024/64=16.
+# With these ratio indications we can easily express the relationship between a 
+# feature map and the original image.
+BACKBONE_STRIDES = [4,8,16,32,64]
+
 ### FPN RELATED CONSTANTS ###
 # Size of the top-down layers used to build the feature pyramid
 TOP_DOWN_PYRAMID_SIZE = 256
 
 ### RPN RELATED CONSTANTS ###
 # Length of square anchor side in pixels
+# You can see it as an area of the anchor in pixels if the anchor was squared.
 RPN_ANCHOR_SCALES = (32, 64, 128, 256, 512)
 # Ratios of anchors at each cell (width/height)
 # A value of 1 represents a square anchor, and 0.5 is a wide anchor
@@ -48,6 +60,10 @@ RPN_ANCHOR_STRIDE = 1
 RPN_NMS_THRESHOLD = 0.7
 # How many anchors per image to use for RPN training
 RPN_TRAIN_ANCHORS_PER_IMAGE = 256
+
+################
+### BACKBONE ###
+################
 
 # Code adopted from:
 # https://github.com/fchollet/deep-learning-models/blob/master/resnet50.py
@@ -198,12 +214,106 @@ def resnet_graph(input_image, stage5=False, train_bn=True):
     # 64x64x256 --> 32x32x2048
     if stage5:
         x = conv_block(x, 3, [512,512,2048], stage=5, block='a')
-        x = identity_block(x, 3, [512,512,2048], stage=3, block='b')
-        C5 = x = identity_block(x, 3, [512,512,2048], stage=3, block='c')
+        x = identity_block(x, 3, [512,512,2048], stage=5, block='b')
+        C5 = x = identity_block(x, 3, [512,512,2048], stage=5, block='c')
     else:
         C5 = None
     # Return the 5 shared convolutional layers
     return [C1,C2,C3,C4,C5]
+
+###########
+### RPN ###
+###########
+
+def rpn_graph(feature_map, anchors_per_location, anchor_stride):
+    '''Builds the actual computation graph of the RPN.
+
+    feature_map: backbone features [batch, height, width, depth]
+    anchors_per_location: number of anchors per pixel in the feature map
+    anchor_stride: Controls the density of anchors. Typically 1 (anchors for
+                   every pixel in the feature map), or 2 (every other pixel).
+
+    Returns:
+        rpn_class_logits: [batch, H * W * anchors_per_location, 2] Anchor classifier logits (before softmax)
+        rpn_probs: [batch, H * W * anchors_per_location, 2] Anchor classifier probabilities.
+        rpn_bbox: [batch, H * W * anchors_per_location, (dy, dx, log(dh), log(dw))] Deltas to be
+                  applied to anchors.
+
+    '''
+    # Make the feature map deeper
+    # The result is the convolutional layer on which the RPN will evaluate anchors
+    shared = KL.Conv2D(512, (3,3), padding='same', activation='relu',
+                        strides=anchor_stride,
+                        name='rpn_conv_shared')(feature_map)
+    
+    # This convolutional layer stores the anchor scores. As you can see, there are
+    # double the expected anchors per location, because for each anchor we have
+    # a foreground and a background score. For example, if anchors per location is 3,
+    # We would have 6 scores per each pixel.
+    # It's just a 1x1 convolution because we only need to create scores without touching the convolution
+    # Also, we are not applying softmax yet because we might want to see the logits
+    # Padding is valid but it's a 1x1 convolution so that doesn't really mean anything
+    x = KL.Conv2D(2*anchors_per_location, (1,1), padding='valid', activation='linear',
+                   name='rpn_class_raw')(shared)
+
+    # Reshape the scores to [batch, anchors, 2]
+    # Note that the -1 means that the number of anchors is inferred from the other dimensions
+    rpn_class_logits = KL.Lambda(
+        lambda t: tf.reshape(t, [tf.shape(t)[0], -1, 2])
+    )(x)
+
+    # Softmax on the logits to get probabilities FG/BG
+    rpn_probs = KL.Activation(
+        "softmax", name="rpn_class_xxx"
+    )(rpn_class_logits)
+
+    # Apply a bounding box refinement
+    # The output of this layer will be a [batch, H, W, anchors per location * 4] tensor
+    # meaning that for each pixel of the previous feature map (H,W) we will have the anchors
+    # we wanted (anchors_per_location), each described by 4 numbers.
+    # These 4 numbers are actually:
+    # x,y: the refined center of the anchor
+    # log(w), log(h): the refined width and height of the anchor
+    x = KL.Conv2D(anchors_per_location*4, (1,1), padding='valid',
+                    activation='linear', name='rpn_bbox_pred')(shared)
+    
+    ## As done before, we reshape this output to [batch, anchors, 4]
+    rpn_bbox = KL.Lambda(
+        lambda t: tf.reshape(t, [tf.shape(t)[0], -1, 4])
+    )(x)
+
+    # Return the obtained tensors
+    return [rpn_class_logits, rpn_probs, rpn_bbox]
+
+
+def build_rpn_model(anchor_stride, anchors_per_location, depth):
+    '''Builds a Keras model for the RPN.
+
+    anchors_per_location: the number of anchors per pixel in the feature map.
+        Usually this number corresponds with the number of possible ratios of
+        anchors
+    anchor_stride: the stride to apply to the anchors generation. 1 means: generate
+        one anchor per pixel in the feature map, while 2 means one anchor
+        every 2 pixels.
+    depth: depth of the backbone feature map
+
+    Returns a Keras Model, which itself outputs:
+
+    (Remember that each proposal is classified in one of two classes, namely
+    foreground and background)
+    rpn_class_logits: [batch, H * W * anchors_per_location, 2] Anchor classifier logits (before softmax)
+    rpn_probs: [batch, H * W * anchors_per_location, 2] Anchor classifier probabilities.
+    rpn_bbox: [batch, H * W * anchors_per_location, (dy, dx, log(dh), log(dw))] Deltas to be
+                applied to anchors.
+    '''
+    input_feature_map = KL.Input(shape=[None,None, depth],
+                            name='input_rpn_feature_map')
+    outputs = rpn_graph(input_feature_map, anchors_per_location, anchor_stride)
+    return KM.Model([input_feature_map], outputs, name='rpn_model')
+
+##########################
+### NETWORK DEFINITION ###
+##########################
 
 def build():
     """
@@ -278,13 +388,232 @@ def build():
     # List of feature maps for the rpn
     rpn_feature_maps = [P2, P3, P4, P5, P6]
 
-    # In testing mode, anchors are given as input
+    # In testing mode, anchors are given
     anchors = input_anchors
 
-    # TODO
+    ### RPN MODEL ###
+    # The RPN is a lightweight neural network that scans the image 
+    # in a sliding-window fashion and finds areas that contain objects.
+    # The regions that the RPN scans over are called anchors. 
+    # Which are boxes distributed over the image area
+    rpn_model = build_rpn_model(anchor_stride=RPN_ANCHOR_STRIDE,
+                        anchors_per_location=len(RPN_ANCHOR_RATIOS), 
+                        depth=TOP_DOWN_PYRAMID_SIZE)
 
+    # We apply the RPN on all layers of the pyramid:
+    layers_outputs = []
+    for p in rpn_feature_maps:
+        layers_outputs.append(rpn_model([p]))
+    # Then we concatenate layer outputs this way:
+    # Instead of dealing with the outputs of each layer separated from all others,
+    # we want to deal with the outputs related to the same pixels of every layer.
+    # For example, layers_outputs currently contains [[A1,B1,C1], [A2,B2,C2]] where
+    # A,B,C are logits, probabilities and bboxes of layer 1 in the first list, layer 2 in
+    # the second, etc. Instead, we want a list like [[A1,A2],[B1,B2],[C1,C2]] where
+    # we relate the same things in different feature maps.
+    outputs = list(zip(*layers_outputs))    
+    # The asterisk makes zip "unzip" the list of lists by grouping the first, second, third... elements
+    # Thus, outputs is exactly the list we wanted
+    # Now, we want to concatenate the list of lists 
+    output_names = ["rpn_class_logits", "rpn_class", "rpn_bbox"]
+    # Finally, we concatenate all elements of the list as rows of three long tensors,
+    # containing all logits, all class probabilities and all bounding boxes.
+    outputs = [KL.Concatenate(axis=1, name=n)(list(o))
+                for o,n in zip(outputs, output_names)]
+
+    # Finally extract all tensors 
+    rpn_class_logits, rpn_class, rpn_bbox = outputs
+
+    model = KM.Model([input_image, input_anchors],
+                     [rpn_class, rpn_bbox],
+                     name='rpn')
+    
+    return model
+
+###############################
+### PREPROCESSING UTILITIES ###
+###############################
+
+def resize_image(image, min_dim, max_dim):
+    '''
+    Resizes an image by keeping the aspect ratio unchanged and using zero-padding
+    to reshape it to a square.
+
+    min_dim: the size of the smaller dimension
+    max_dim: ensures that the image's longest side doesn't exceed this value
+
+    Returns:
+        image: the resized image
+        window: (y1,x1,y2,x2): since padding might be inserted in the returned image,
+            this window contains the coordinates of the image part in the full image.
+            x2, y2 are not included, so the last "acceptable" line x2-1 and the last
+            "acceptable" column is y2-1
+        scale: the scale factor used to resize the image
+        padding: type of padding added to the image [(top, bottom), (left, right), (0, 0)]
+    '''
+    # Keep track of the image dtype to return the same dtype
+    image_dtype = image.dtype
+    h, w = image.shape[:2]
+    image_max = max(h, w)
+    # Scale up, not down
+    scale = max(1, min_dim/min(h,w))
+    # Check if enlarging the max dim by scale would exceed our limit
+    if round(image_max * scale) > max_dim:
+        # If that's the case, bound the scale to the ratio between max dim and the image max
+        scale = max_dim / image_max
+    # Resize image using bilinear interpolation
+    if scale != 1:
+        image = resize(image, output_shape=(round(h * scale), round(w * scale)),
+                        order=1, mode='constant', cval=0, clip=True,
+                        anti_aliasing=False, anti_aliasing_sigma=False,
+                        preserve_range=True)
+    # Get new height and width:
+    h, w = image.shape[:2]
+    top_pad = (max_dim - h) // 2
+    bottom_pad = max_dim - h - top_pad
+    left_pad = (max_dim - w) // 2
+    right_pad = max_dim - w - left_pad
+    padding = [(top_pad, bottom_pad),
+                (left_pad, right_pad),
+                (0,0)]
+    # Apply padding to the image
+    image = np.pad(image, padding, mode='constant', constant_values=0)
+    window = (top_pad, left_pad, h + top_pad, w + left_pad)
+    return image.astype(image_dtype), window, scale, padding
+
+##########################
+### DETECTION PIPELINE ###
+##########################
+
+def preprocess_inputs(images):
+    '''
+    Takes a list of images, modifies them to the format expected as an
+    input to the neural network.
+
+    images: a list of image matrices with different sizes. What is constant
+        is the third dimension of the image matrix, the depth (usually 3)
+    
+    Returns a numpy matrix containing the preprocessed image ([N, h, w, 3]).
+    The preprocessing includes resizing, zero-padding and normalization.
+    '''
+    preprocessed_inputs = []
+    windows = []
+    for image in images:
+        preprocessed_image, window, scale, padding = resize_image(
+            image, IMAGE_MIN_DIM, IMAGE_MAX_DIM
+        )
+        # We want a normalized image, so we subtract the mean pixel to it
+        # and convert to float.
+        preprocessed_image = preprocessed_image.astype(np.float32) - MEAN_PIXEL
+        preprocessed_inputs.append(preprocessed_image)
+        windows.append(window)
+    # Pack into arrays
+    preprocessed_inputs = np.stack(preprocessed_inputs)
+    windows = np.stack(windows)
+    return preprocessed_inputs, windows
+
+def generate_anchors(scales, ratios, shape, feature_stride, anchor_stride):
+    """
+    scales: 1D array of anchor sizes in pixels. Example: [32, 64, 128]
+    ratios: 1D array of anchor ratios of width/height. Example: [0.5, 1, 2]
+    shape: [height, width] spatial shape of the feature map over which
+            to generate anchors. It corresponds with the shape of one of the
+            feature maps in the FPN (P2,P3,P4,P5,P6)
+    feature_stride: Stride of the feature map relative to the image in pixels.
+    anchor_stride: Stride of anchors on the feature map. For example, if the
+        value is 2 then generate anchors for every other feature map pixel.
+    """
+    # Get all possible combinations of scales and ratios
+    scales, ratios = np.meshgrid(np.array(scales), np.array(ratios))
+    scales = scales.flatten()
+    ratios = ratios.flatten()
+
+    # Ratios are width/height, scales are squared sizes of the sides of the anchors
+    # if the anchor was a square.
+    # Calculating the square root of the ratios we get the "average" unitary side of the anchor
+    # For example, sqrt(0.5), sqrt(1) and sqrt(2)
+    # If the square root is greater than 1, the width of the anchor box is greater than
+    # its height and the opposite is also true. 
+    # So, if we multiply scales for the square-rooted ratios, we get anchor widths
+    # (for example, with ratio 2, the square root is 1.4... and the width will therefore be longer
+    # than the one indicated in the "scales" array)
+    # With the same reasoning we can say that dividing the scales by the squre-rooted ratios we get
+    # heights.
+    # Thus, if we want the heights we need to compute:
+    heights = scales / np.sqrt(ratios)
+    widths  = scales * np.sqrt(ratios)
+
+    # What are the positions in the feature space?
+    # We use arange to create evenly spaced sequences from 0 for all the
+    # rows skipping the number of rows required by the anchor stride.
+    # We multiply by the feature stride so that we get image-aligned coordinates
+    shifts_y = np.arange(0, shape[0], anchor_stride) * feature_stride
+    # Same for columns
+    shifts_x = np.arange(0, shape[1], anchor_stride) * feature_stride
+    # Generate all combinations
+    shifts_x, shifts_y = np.meshgrid(shifts_x, shifts_y)
+
+    # Enumerate combinations of centers, widths and heights
+    box_widths, box_centers_x = np.meshgrid(widths, shifts_x)
+    box_heights, box_centers_y = np.meshgrid(heights, shifts_y)
+
+    # TODO: almost done!!!
+
+
+def get_anchors(image_shape):
+    """Returns the anchor pyramid for the given image size"""
+    backbone_shapes = np.array([
+        [int(math.ceil(image_shape[0] / stride)),
+         int(math.ceil(image_shape[1] / stride))]
+         for stride in BACKBONE_STRIDES]
+    )
+    anchors = []
+    # The next function generates anchors at the different levels of the FPN.
+    # Each scale is bound to a different level of the pyramid
+    # On the other hand, all ratios of the proposals are used in all levels.
+    for i in range(len(RPN_ANCHOR_SCALES)):
+        anchors.append(generate_anchors(RPN_ANCHOR_SCALES[i],   # Use only the appropriate scale for the level
+                                        RPN_ANCHOR_RATIOS,      # But use all ratios for the BBs
+                                        backbone_shapes[i],     # At this level, the image has this shape...
+                                        BACKBONE_STRIDES[i],    # Or better, is scaled of this quantity
+                                        RPN_ANCHOR_STRIDE       # Frequency of sampling in the feature map 
+                                                                # for the generation of anchors
+                                        ))
+    # Transform the list in an array [N, (y1,x1,y2,x2)] which contains all generated anchors
+    # The sorting of the scale is bound to the scaling of the feature maps,
+    # So first we have all anchors at scale 1/4, then all anchors at scale 1/8 and so on...
+    anchors = np.concatenate(anchors, axis=0)
+
+def detect(images):
+    '''
+    This function runs the detection pipeline.
+
+    images: a list of images, even of different sizes 
+        (they will be reshaped as zero-padded squares of the same dimensions)
+
+    TODO: what does this function return?
+    '''
+    preprocessed_images, windows = preprocess_inputs(images)
+
+    # Check that all images in the batch now have the same size
+    image_shape = preprocessed_images[0].shape
+    for g in preprocessed_images[1:]:
+        assert g.shape == image_shape, \
+            "All images must have the same size after preprocessing"
+    
+    # The network also receives anchors as inputs, so we need a function
+    # that returns the anchors
+    anchors = get_anchors(image_shape)
 
 
 
 if __name__ == "__main__":
+    # Instantiates the Mask-RCNN model up until the RPN
+    # (with no post-processing)
+    # (yet)
     model = build()
+
+    # Test the detection with one image (stack it to simulate a batch)
+    img = np.stack([mpimg.imread('res/elephant.jpg')])
+    
+    detect(img)
