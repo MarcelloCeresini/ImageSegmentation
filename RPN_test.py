@@ -3,6 +3,7 @@ import random
 import time
 import matplotlib.pyplot as plt
 import matplotlib.image as mpimg
+from matplotlib.patches import Rectangle
 import math
 import numpy as np
 import tensorflow as tf
@@ -60,6 +61,11 @@ RPN_ANCHOR_STRIDE = 1
 RPN_NMS_THRESHOLD = 0.7
 # How many anchors per image to use for RPN training
 RPN_TRAIN_ANCHORS_PER_IMAGE = 256
+
+# Anchor cache: when dealing with images of the same shape, we don't want
+# to calculate anchor coordinates over and over again, thus we mantain
+# a cache
+ANCHOR_CACHE = {}
 
 ################
 ### BACKBONE ###
@@ -330,8 +336,7 @@ def build():
     input_image = KL.Input(
         shape = IMAGE_SHAPE, name='input_image'
     )
-    # b. The anchors in normalized coordinates
-    # TODO: why?
+    # b. The anchors in NORMALIZED coordinates
     input_anchors = KL.Input(
         shape = [None, 4], name='input_anchors'
     )
@@ -388,7 +393,7 @@ def build():
     # List of feature maps for the rpn
     rpn_feature_maps = [P2, P3, P4, P5, P6]
 
-    # In testing mode, anchors are given
+    # In testing mode, anchors are given as input to the network
     anchors = input_anchors
 
     ### RPN MODEL ###
@@ -416,16 +421,17 @@ def build():
     # Thus, outputs is exactly the list we wanted
     # Now, we want to concatenate the list of lists 
     output_names = ["rpn_class_logits", "rpn_class", "rpn_bbox"]
-    # Finally, we concatenate all elements of the list as rows of three long tensors,
+    # Then, we concatenate all elements of the list as rows of three long tensors,
     # containing all logits, all class probabilities and all bounding boxes.
     outputs = [KL.Concatenate(axis=1, name=n)(list(o))
                 for o,n in zip(outputs, output_names)]
 
-    # Finally extract all tensors 
+    # Finally, extract all tensors 
     rpn_class_logits, rpn_class, rpn_bbox = outputs
 
-    model = KM.Model([input_image, input_anchors],
-                     [rpn_class, rpn_bbox],
+    # Finally instantiate the Keras model and return it
+    model = KM.Model(inputs=[input_image, input_anchors],
+                     outputs=[rpn_class, rpn_bbox],
                      name='rpn')
     
     return model
@@ -557,34 +563,96 @@ def generate_anchors(scales, ratios, shape, feature_stride, anchor_stride):
     box_widths, box_centers_x = np.meshgrid(widths, shifts_x)
     box_heights, box_centers_y = np.meshgrid(heights, shifts_y)
 
-    # TODO: almost done!!!
+    # The shapes of these arrays are:
+    # Total number of feature maps pixels x 3 (the three scales for each anchor position)
+    # Thus, we can reshape the arrays to get two lists: one of (y,x) and one of (h, w)
+    box_centers = np.stack(
+        # Stack them together in a new axis ([anchors, 3, 2])
+        [box_centers_y, box_centers_x], axis=2
+    ).reshape([-1, 2]) # Unstack anchors creating a [total_ancors, 2] array
+    box_sizes = np.stack(
+        [box_heights, box_widths], axis=2
+    ).reshape([-1, 2])
 
+    # Finally, convert the arrays into a single big array with (y1, x1, y2, x2) coordinates
+    boxes = np.concatenate([box_centers - 0.5 * box_sizes, # y1, x1
+                            box_centers + 0.5 * box_sizes], axis=1) # y2, x2
+    # Concatenate on the columns obtaining x1,y1,x2,y2
+    return boxes
+
+def norm_boxes(boxes, shape):
+    """Converts boxes from pixel coordinates to normalized coordinates.
+    boxes: [N, (y1, x1, y2, x2)] in pixel coordinates
+    shape: (height, width) in pixels
+
+    Note: In pixel coordinates (y2, x2) is outside the box. But in normalized
+    coordinates it's inside the box.
+
+    Returns:
+        [N, (y1, x1, y2, x2)] in normalized coordinates
+    """
+    h, w = shape
+    # Shift x2 and y2 back into the image boundaries
+    shift = np.array([0, 0, 1, 1])
+    # ...thus reducing rows and columns by 1.
+    scale = np.array([
+        h - 1,
+        w - 1,
+        h - 1,
+        w - 1
+    ])
+    return ((boxes - shift) / scale).astype(np.float32)
+
+# Just the inverse function
+def denorm_boxes(boxes, shape):
+    """Converts boxes from normalized coordinates to pixel coordinates.
+    boxes: [N, (y1, x1, y2, x2)] in normalized coordinates
+    shape: [..., (height, width)] in pixels
+
+    Note: In pixel coordinates (y2, x2) is outside the box. But in normalized
+    coordinates it's inside the box.
+
+    Returns:
+        [N, (y1, x1, y2, x2)] in pixel coordinates
+    """
+    h, w = shape
+    scale = np.array([h - 1, w - 1, h - 1, w - 1])
+    shift = np.array([0, 0, 1, 1])
+    return np.around((boxes * scale) + shift).astype(np.int32)
 
 def get_anchors(image_shape):
     """Returns the anchor pyramid for the given image size"""
+    global ANCHOR_CACHE
     backbone_shapes = np.array([
         [int(math.ceil(image_shape[0] / stride)),
          int(math.ceil(image_shape[1] / stride))]
          for stride in BACKBONE_STRIDES]
     )
-    anchors = []
-    # The next function generates anchors at the different levels of the FPN.
-    # Each scale is bound to a different level of the pyramid
-    # On the other hand, all ratios of the proposals are used in all levels.
-    for i in range(len(RPN_ANCHOR_SCALES)):
-        anchors.append(generate_anchors(RPN_ANCHOR_SCALES[i],   # Use only the appropriate scale for the level
-                                        RPN_ANCHOR_RATIOS,      # But use all ratios for the BBs
-                                        backbone_shapes[i],     # At this level, the image has this shape...
-                                        BACKBONE_STRIDES[i],    # Or better, is scaled of this quantity
-                                        RPN_ANCHOR_STRIDE       # Frequency of sampling in the feature map 
-                                                                # for the generation of anchors
-                                        ))
-    # Transform the list in an array [N, (y1,x1,y2,x2)] which contains all generated anchors
-    # The sorting of the scale is bound to the scaling of the feature maps,
-    # So first we have all anchors at scale 1/4, then all anchors at scale 1/8 and so on...
-    anchors = np.concatenate(anchors, axis=0)
+    if not tuple(image_shape) in ANCHOR_CACHE:
+        # If we have not calculated the anchor coordinates for an image with the same shape,
+        # do and save them
+        anchors = []
+        # The next function generates anchors at the different levels of the FPN.
+        # Each scale is bound to a different level of the pyramid
+        # On the other hand, all ratios of the proposals are used in all levels.
+        for i in range(len(RPN_ANCHOR_SCALES)):
+            anchors.append(generate_anchors(RPN_ANCHOR_SCALES[i],   # Use only the appropriate scale for the level
+                                            RPN_ANCHOR_RATIOS,      # But use all ratios for the BBs
+                                            backbone_shapes[i],     # At this level, the image has this shape...
+                                            BACKBONE_STRIDES[i],    # Or better, is scaled of this quantity
+                                            RPN_ANCHOR_STRIDE       # Frequency of sampling in the feature map 
+                                                                    # for the generation of anchors
+                                            ))
+        # Transform the list in an array [N, (y1,x1,y2,x2)] which contains all generated anchors
+        # The sorting of the scale is bound to the scaling of the feature maps,
+        # So first we have all anchors at scale 1/4, then all anchors at scale 1/8 and so on...
+        anchors = np.concatenate(anchors, axis=0)
+        # Normalize anchors coordinates
+        anchors = norm_boxes(anchors, image_shape[:2])
+        ANCHOR_CACHE[tuple(image_shape)] = anchors
+    return ANCHOR_CACHE[tuple(image_shape)]
 
-def detect(images):
+def detect(images, model: KM.Model):
     '''
     This function runs the detection pipeline.
 
@@ -604,16 +672,40 @@ def detect(images):
     # The network also receives anchors as inputs, so we need a function
     # that returns the anchors
     anchors = get_anchors(image_shape)
+    # The original matterport implementation comments the following action
+    # saying that Keras requires it. Basically, anchors are replicated among
+    # the batch dimension. In our case, batch size is simply one.
+    anchors = np.broadcast_to(anchors, (1,) + anchors.shape)
 
+    # Use the previously instanciated model to run prediction
+    rpn_classes, rpn_bboxes = model.predict([preprocessed_images, anchors])
 
+    # Return the preprocessed images and bounding boxes from the RPN
+    return preprocessed_images, rpn_bboxes
 
 if __name__ == "__main__":
-    # Instantiates the Mask-RCNN model up until the RPN
-    # (with no post-processing)
-    # (yet)
     model = build()
+    # We need to compile the model before using it
 
     # Test the detection with one image (stack it to simulate a batch)
     img = np.stack([mpimg.imread('res/elephant.jpg')])
-    
-    detect(img)
+    mod_images, rpn_bboxes = detect(img, model)
+
+    # Show each image sequentially and draw a random selection of RPN bounding boxes.
+    # for i in range(len(mod_images)):
+    #     image = mod_images[i, :, :]
+    #     bboxes = rpn_bboxes[i, :, :]
+    #     # Select random bboxes
+    #     rnd_bboxes = np.stack(random.sample(bboxes, 100))
+    #     rnd_boxes = denorm_boxes(rnd_boxes, image.shape)
+    #     fig, ax = plt.subplots()
+    #     ax.imshow(image)
+    #     for bb in rnd_bboxes:
+    #         rect = Rectangle(
+    #             (bb[0], bb[1]), bb[2]-bb[0], bb[3]-bb[1],
+    #             linewidth=1, edgecolor='r', facecolor='none'
+    #         )
+    #         ax.add_patch(rect)
+    #     plt.show()
+        
+
