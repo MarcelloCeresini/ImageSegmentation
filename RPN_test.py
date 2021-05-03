@@ -1,15 +1,13 @@
-import os
-import random
-import time
+import math
+import numpy as np
+
 import matplotlib.pyplot as plt
 import matplotlib.image as mpimg
 from matplotlib.patches import Rectangle
-import math
-import numpy as np
+
 import tensorflow as tf
 import keras.layers as KL
 import keras.models as KM
-import keras.engine as KM
 
 from skimage.transform import resize
 
@@ -321,16 +319,19 @@ def build_rpn_model(anchor_stride, anchors_per_location, depth):
 ### NETWORK DEFINITION ###
 ##########################
 
+class BadImageSizeException(Exception):
+    pass
+
 def build():
     """
     Builds the Backbone + RPN model.
     """
     h, w = IMAGE_SHAPE[:2]
     if h / 2**6 != int(h / 2**6) or w / 2**6 != int(w / 2**6):
-        raise Exception("Image size must be dividable by 2 at least 6 times "
-                        "to avoid fractions when downscaling and upscaling."
-                        "For example, use 256, 320, 384, 448, 512, ... etc. ")
-    
+        raise BadImageSizeException("Image size must be dividable by 2 at least 6 times "
+                                    "to avoid fractions when downscaling and upscaling."
+                                    "For example, use 256, 320, 384, 448, 512, ... etc. ")
+            
     # Define inputs
     # a. The input image
     input_image = KL.Input(
@@ -659,7 +660,9 @@ def detect(images, model: KM.Model):
     images: a list of images, even of different sizes 
         (they will be reshaped as zero-padded squares of the same dimensions)
 
-    TODO: what does this function return?
+    Returns:
+        preprocessed_images: the preprocessed images in a batch
+        rpn_boxes: the boxes predicted by the RPN
     '''
     preprocessed_images, windows = preprocess_inputs(images)
 
@@ -692,20 +695,22 @@ if __name__ == "__main__":
     mod_images, rpn_bboxes = detect(img, model)
 
     # Show each image sequentially and draw a random selection of RPN bounding boxes.
-    # for i in range(len(mod_images)):
-    #     image = mod_images[i, :, :]
-    #     bboxes = rpn_bboxes[i, :, :]
-    #     # Select random bboxes
-    #     rnd_bboxes = np.stack(random.sample(bboxes, 100))
-    #     rnd_boxes = denorm_boxes(rnd_boxes, image.shape)
-    #     fig, ax = plt.subplots()
-    #     ax.imshow(image)
-    #     for bb in rnd_bboxes:
-    #         rect = Rectangle(
-    #             (bb[0], bb[1]), bb[2]-bb[0], bb[3]-bb[1],
-    #             linewidth=1, edgecolor='r', facecolor='none'
-    #         )
-    #         ax.add_patch(rect)
-    #     plt.show()
-        
+    for i in range(len(mod_images)):
+        image = mod_images[i, :, :]
+        bboxes = rpn_bboxes[i, :, :]
+        # Select random bboxes
+        rnd_bboxes = np.random.permutation(bboxes)[:500]
+        rnd_bboxes = denorm_boxes(rnd_bboxes, image.shape[:2])
+        fig, ax = plt.subplots()
+        # Note that the image was previously normalized so colors will be weird
+        ax.imshow(image)
+        for bb in rnd_bboxes:
+            rect = Rectangle(
+                (bb[0], bb[1]), bb[2]-bb[0], bb[3]-bb[1],
+                linewidth=1, edgecolor='r', facecolor='none'
+            )
+            ax.add_patch(rect)
+        plt.show()
 
+    # TODO Add training code
+    # TODO Add the rest of Mask-RCNN
