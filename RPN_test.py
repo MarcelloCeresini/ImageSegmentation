@@ -542,6 +542,7 @@ def detect(images, model: KM.Model):
 
     Returns:
         preprocessed_images: the preprocessed images in a batch
+        rpn_classes: the classes (fg/bg) predicted by the RPN and their probabilities
         rpn_boxes: the boxes predicted by the RPN
     '''
     preprocessed_images, windows = preprocess_inputs(images)
@@ -563,8 +564,8 @@ def detect(images, model: KM.Model):
     # Use the previously instanciated model to run prediction
     rpn_classes, rpn_bboxes = model.predict([preprocessed_images, anchors])
 
-    # Return the preprocessed images and bounding boxes from the RPN
-    return preprocessed_images, rpn_bboxes
+    # Return the preprocessed images, classifications and bounding boxes from the RPN
+    return preprocessed_images, rpn_classes, rpn_bboxes
 
 if __name__ == "__main__":
     model = build()
@@ -572,14 +573,20 @@ if __name__ == "__main__":
 
     # Test the detection with one image (stack it to simulate a batch)
     img = np.stack([mpimg.imread('res/elephant.jpg')])
-    mod_images, rpn_bboxes = detect(img, model)
+    mod_images, rpn_classes, rpn_bboxes = detect(img, model)
 
-    # Show each image sequentially and draw a random selection of RPN bounding boxes.
+    # Show each image sequentially and draw a selection of "the best" RPN bounding boxes.
+    # Note that the model is not trained yet so "the best" boxes are really just random.
     for i in range(len(mod_images)):
         image = mod_images[i, :, :]
+        classes = rpn_classes[i,:,:]
         bboxes = rpn_bboxes[i, :, :]
-        # Select random bboxes
-        rnd_bboxes = np.random.permutation(bboxes)[:200]
+        # Select positive bboxes
+        bboxes = bboxes[np.where(classes[:,0] > 0.5)]
+        # Sort by probability
+        rnd_bboxes = sorted(np.arange(0, bboxes.shape[0], 1),
+                            key=lambda x: classes[x, 1])[:200]
+        rnd_bboxes = bboxes[rnd_bboxes, :]
         rnd_bboxes = denorm_boxes(rnd_bboxes, image.shape[:2])
         fig, ax = plt.subplots()
         # Note that the image was previously normalized so colors will be weird
