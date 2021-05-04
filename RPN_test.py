@@ -69,160 +69,37 @@ ANCHOR_CACHE = {}
 ### BACKBONE ###
 ################
 
-# Code adopted from:
-# https://github.com/fchollet/deep-learning-models/blob/master/resnet50.py
+class InvalidBackboneError(Exception):
+    pass
 
-def identity_block(input_tensor, kernel_size, filters, stage, block,
-                   use_bias=True, train_bn=False):
-    """The identity_block is the block that has no conv layer at shortcut
-    # Arguments
-        input_tensor: input tensor
-        kernel_size: default 3, the kernel size of middle conv layer at main path
-        filters: list of integers, the nb_filters of 3 conv layer at main path
-        stage: integer, current stage label, used for generating layer names
-        block: 'a','b'..., current block label, used for generating layer names
-        use_bias: Boolean. To use or not use a bias in conv layers.
-        train_bn: Boolean. Train or freeze Batch Norm layers
-    """
-    # See conv_block for comments on these operations.
-    nb_filter1, nb_filter2, nb_filter3 = filters
-    conv_name_base = 'res' + str(stage) + block + '_branch'
-    bn_name_base = 'bn' + str(stage) + block + '_branch'
-
-    x = KL.Conv2D(nb_filter1, (1, 1), name=conv_name_base + '2a',
-                  use_bias=use_bias)(input_tensor)
-    x = KL.BatchNormalization(name=bn_name_base + '2a')(x, training=train_bn)
-    x = KL.Activation('relu')(x)
-
-    x = KL.Conv2D(nb_filter2, (kernel_size, kernel_size), padding='same',
-                  name=conv_name_base + '2b', use_bias=use_bias)(x)
-    x = KL.BatchNormalization(name=bn_name_base + '2b')(x, training=train_bn)
-    x = KL.Activation('relu')(x)
-
-    x = KL.Conv2D(nb_filter3, (1, 1), name=conv_name_base + '2c',
-                  use_bias=use_bias)(x)
-    x = KL.BatchNormalization(name=bn_name_base + '2c')(x, training=train_bn)
-
-    # Input is added directly to the output. This is only possible if no
-    # changes to the shapes are made during convolutions. This is true because
-    # all convolutions are either (1,1) with unitarian strides or have same padding
-    # (the one in the middle)
-    x = KL.Add()([x, input_tensor])
-    x = KL.Activation('relu', name='res' + str(stage) + block + '_out')(x)
-    return x
-
-
-def conv_block(input_tensor, kernel_size, filters, stage, block,
-               strides=(2, 2), use_bias=True, train_bn=False):
-    """conv_block is the block that has a conv layer at shortcut
-    # Arguments
-        input_tensor: input tensor
-        kernel_size: default 3, the kernel size of middle conv layer at main path
-        filters: list of integers, the nb_filters of 3 conv layer at main path
-        stage: integer, current stage label, used for generating layer names
-        block: 'a','b'..., current block label, used for generating layer names
-        use_bias: Boolean. To use or not use a bias in conv layers.
-        train_bn: Boolean. Train or freeze Batch Norm layers
-    Note that from stage 3, the first conv layer at main path is with subsample=(2,2)
-    And the shortcut should have subsample=(2,2) as well
-    """
-    nb_filter1, nb_filter2, nb_filter3 = filters
-    conv_name_base = 'res' + str(stage) + block + '_branch'
-    bn_name_base = 'bn' + str(stage) + block + '_branch'
-
-    # 1x1 convolution with given stride + batch normalization and relu activation
-    x = KL.Conv2D(nb_filter1, (1, 1), strides=strides,
-                  name=conv_name_base + '2a', use_bias=use_bias)(input_tensor)
-    x = KL.BatchNormalization(name=bn_name_base + '2a')(x, training=train_bn)
-    x = KL.Activation('relu')(x)
-
-    # ...followed by a convolution with given filter, unitarian stride and same padding
-    x = KL.Conv2D(nb_filter2, (kernel_size, kernel_size), padding='same',
-                  name=conv_name_base + '2b', use_bias=use_bias)(x)
-    x = KL.BatchNormalization(name=bn_name_base + '2b')(x, training=train_bn)
-    x = KL.Activation('relu')(x)
-
-    # followed by a 1x1 convolution with unitarian stride that augments/reduces the channels
-    x = KL.Conv2D(nb_filter3, (1, 1), name=conv_name_base +
-                  '2c', use_bias=use_bias)(x)
-    x = KL.BatchNormalization(name=bn_name_base + '2c')(x, training=train_bn)
-
-    # Also, a shortcut is added to link the input to the last of the three convolutions.
-    # - Apply the chosen strides to compensate for skipping the first convolution
-    # - No other changes are done, so just apply unitarian stride and use the same number
-    #   of filters used for the third convolution
-    shortcut = KL.Conv2D(nb_filter3, (1, 1), strides=strides,
-                         name=conv_name_base + '1', use_bias=use_bias)(input_tensor)
-    shortcut = KL.BatchNormalization(name=bn_name_base + '1')(shortcut, training=train_bn)
-
-    # Adds together two tensors with the same shape.
-    # In this case, it's an element wise sum between the output of the third convolution
-    # and the input tensor.
-    x = KL.Add()([x, shortcut])
-    x = KL.Activation('relu', name='res' + str(stage) + block + '_out')(x)
-    return x
-
-def resnet_graph(input_image, stage5=False, train_bn=True):
-    """Build a ResNet graph.
-        stage5: Boolean. If False, stage5 of the network is not created
-        train_bn: Boolean. Train or freeze Batch Norm layers
-
-       Returns:
-        [C1,C2,C3,C4,C5]: convolutional layers that can be shared 
-            with other modules of the network
-    """
-    # Stage 1
-    # Apply 3 rows and columns of zero padding.
-    # 1024x1024x3 --> 1030x1030x3
-    x = KL.ZeroPadding2D((3,3))(input_image)
-    # Apply 7x7 convolution.
-    # 1030x1030x3 --> ((1030-7+2*0)/2)+1x((1030-7+2*0)/2)+1x3
-    # --> 512x512x64
-    x = KL.Conv2D(filters=64, kernel_size=(7,7),
-                    strides=(2,2), padding='valid',
-                    name='conv1', use_bias=True)(x)
-    # Apply Batch Normalization. It is said to have problems with
-    # small batches during training, thus training is set to False
-    x = KL.BatchNormalization(name='bn_conv1')(x, training=False)
-    # Apply relu activation function
-    x = KL.Activation('relu')(x)
-    # 512x512x64 --> 256x256x64 because maxpooling with stride 2,
-    # but using same padding.
-    C1 = x = KL.MaxPooling2D(pool_size=(3,3), strides=(2,2),
-                            padding='same')(x)
-    # Stage 2
-    # We use coarser/repeated convolution blocks defined in another function
-    # 256x256x64 --> 256x256x256
-    x = conv_block(input_tensor=x, kernel_size=3,
-                filters=[64,64,256], stage=2,
-                block='a', strides=(1,1))
-    # 256x256x256 --> 256x256x256
-    x = identity_block(x, 3, [64,64,256], stage=2, block='b')
-    C2 = x = identity_block(x, 3, [64,64,256], stage=2, block='c')
-    # Stage 3
-    # 256x256x256 --> 128x128x512 (due to the stride (2,2) 
-    x = conv_block(x, 3, [128,128,512], stage=3, block='a')
-    x = identity_block(x, 3, [128,128,512], stage=3, block='b')
-    x = identity_block(x, 3, [128,128,512], stage=3, block='c')
-    C3 = x = identity_block(x, 3, [128,128,512], stage=3, block='d')
-    # Stage 4
-    # 128x128x256 --> 64x64x1024 
-    # of the first convolutional block)
-    x = conv_block(x, 3, [256, 256, 1024], stage=4, block='a')
-    # resnet50 has 5 identity blocks, resnet101 has 22 identity blocks
-    block_count = {'resnet50': 5, 'resnet101': 22}[BACKBONE_NETWORK]
-    for i in range(block_count):
-        x = identity_block(x, 3, [256,256,1024], stage=4, block=chr(98+i))
-    C4 = x
-    # Stage 5
-    # 64x64x256 --> 32x32x2048
-    if stage5:
-        x = conv_block(x, 3, [512,512,2048], stage=5, block='a')
-        x = identity_block(x, 3, [512,512,2048], stage=5, block='b')
-        C5 = x = identity_block(x, 3, [512,512,2048], stage=5, block='c')
-    else:
-        C5 = None
+def resnet_graph(input_image):
     # Return the 5 shared convolutional layers
+    if BACKBONE_NETWORK == 'resnet101':
+        model = tf.keras.applications.ResNet101(
+            include_top=False, # set to False to remove the classifier
+            weights='imagenet', 
+            input_tensor=input_image, 
+            pooling=None, # apply max pooling to last layer so it's a 2D tensor
+        )
+        C1 = model.get_layer('pool1_pool').output
+        C2 = model.get_layer('conv2_block3_out').output
+        C3 = model.get_layer('conv3_block4_out').output
+        C4 = model.get_layer('conv4_block23_out').output
+        C5 = model.get_layer('conv5_block3_out').output
+    elif BACKBONE_NETWORK == 'resnet50':
+        model = tf.keras.applications.ResNet50(
+            include_top=False, # set to False to remove the classifier
+            weights='imagenet', 
+            input_tensor=input_image, 
+            pooling=None, # apply max pooling to last layer so it's a 2D tensor
+        )
+        C1 = model.get_layer('pool1_pool').output
+        C2 = model.get_layer('conv2_block3_out').output
+        C3 = model.get_layer('conv3_block4_out').output
+        C4 = model.get_layer('conv4_block6_out').output
+        C5 = model.get_layer('conv5_block3_out').output
+    else:
+        raise(InvalidBackboneError('The selected backbone is not yet supported'))
     return [C1,C2,C3,C4,C5]
 
 ###########
@@ -342,17 +219,20 @@ def build():
         shape = [None, 4], name='input_anchors'
     )
 
-    # Backbone: Bottom-up ResNet50 + Top-down FPN with
-    # shared convolutional layers. This requires a custom implementation.
+    # Backbone: Bottom-up ResNet101 + Top-down FPN with
+    # shared convolutional layers. 
+    # We use the Keras pre-trained implementation of the ResNet101 backbone
+    # from which we can extract the feature maps we need in the following
+    # modules.
 
     ### BOTTOM-UP RESNET50 ###
     # Recall that:
-    # C1 = 256x256x64
-    # C2 = 256x256x256
-    # C3 = 128x128x512
-    # C4 = 64x64x1024
-    # C5 = 32x32x2048
-    C1,C2,C3,C4,C5 = resnet_graph(input_image, stage5=True, train_bn=False)
+    # C1 = batchx256x256x64
+    # C2 = batchx256x256x256
+    # C3 = batchx128x128x512
+    # C4 = batchx64x64x1024
+    # C5 = batchx32x32x2048
+    C1,C2,C3,C4,C5 = resnet_graph(input_image)
 
     ### TOP-DOWN FPN ###
     P5 = KL.Conv2D(TOP_DOWN_PYRAMID_SIZE, (1,1), name='fpn_c5p5')(C5)
@@ -699,7 +579,7 @@ if __name__ == "__main__":
         image = mod_images[i, :, :]
         bboxes = rpn_bboxes[i, :, :]
         # Select random bboxes
-        rnd_bboxes = np.random.permutation(bboxes)[:500]
+        rnd_bboxes = np.random.permutation(bboxes)[:200]
         rnd_bboxes = denorm_boxes(rnd_bboxes, image.shape[:2])
         fig, ax = plt.subplots()
         # Note that the image was previously normalized so colors will be weird
