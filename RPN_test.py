@@ -8,6 +8,7 @@ from matplotlib.patches import Rectangle
 import tensorflow as tf
 import keras.layers as KL
 import keras.models as KM
+import keras.backend as K
 
 from skimage.transform import resize
 
@@ -64,6 +65,9 @@ RPN_TRAIN_ANCHORS_PER_IMAGE = 256
 # to calculate anchor coordinates over and over again, thus we mantain
 # a cache
 ANCHOR_CACHE = {}
+
+# Execution mode: Training or Evaluation
+EXECUTION_MODE = 'evaluation' # or 'training
 
 ################
 ### BACKBONE ###
@@ -199,7 +203,7 @@ def build_rpn_model(anchor_stride, anchors_per_location, depth):
 class BadImageSizeException(Exception):
     pass
 
-def build():
+def build(mode):
     """
     Builds the Backbone + RPN model.
     """
@@ -218,6 +222,43 @@ def build():
     input_anchors = KL.Input(
         shape = [None, 4], name='input_anchors'
     )
+
+    # If we are training the network, we need the groundtruth rpn matches (1 or 0) 
+    # and bounding boxes as well as the detections groundtruth 
+    # (class IDs, bounding boxes and masks) as additional inputs
+    if mode == 'training':
+        # RPN
+        input_rpn_match = KL.Input(
+            shape = [None, 1], name='input_rpn_match', dtype = tf.int32
+            # TODO: can we use int8 or a boolean for optimization?
+        )
+        input_rpn_bbox = KL.Input(
+            shape = [None, 4], name = 'input_rpn_bbox', dtype = tf.float32
+        )
+
+        # Detections
+        input_gt_class_ids = KL.Input(
+            shape = [None], name = 'input_gt_class_ids', dtype = tf.int32
+        )
+        # Zero-padded GT boxes in pixels
+        # [batch, MAX_GT_INSTANCES, (y1,x1,y2,x2)] (in pixels)
+        input_gt_boxes = KL.Input(
+            shape = [None], name = 'input_gt_class_ids', dtype = tf.int32
+        )
+        # Normalize input coordinates
+        gt_boxes = KL.Lambda(lambda x: norm_boxes_tf(
+            x, K.shape(input_image)[1:3]) # Ignore batch and other measures
+        )(input_gt_boxes)
+
+        # Groundtruth masks in zero-padded pixels
+        # [batch, height, width, MAX_GT_INSTANCES]
+        # There is a limit to how many GROUNDTRUTH instances can be passed
+        input_gt_masks = KL.Input(
+            # Masks are as big as the image in height and width and there is one channel
+            # for each mask. Each mask is boolean.
+            shape=[IMAGE_SHAPE[0], IMAGE_SHAPE[1], None],
+            name="input_gt_masks", dtype=bool
+        )
 
     # Backbone: Bottom-up ResNet101 + Top-down FPN with
     # shared convolutional layers. 
@@ -273,6 +314,11 @@ def build():
     
     # List of feature maps for the rpn
     rpn_feature_maps = [P2, P3, P4, P5, P6]
+    # List of feature maps for the rest of the network
+    mrcnn_feature_maps = [P2,P3,P4,P5]
+    # The Rest of the network does not use P6
+
+    # TODO: ADD TRAINING CODE REGARDING ANCHORS ETC.
 
     # In testing mode, anchors are given as input to the network
     anchors = input_anchors
@@ -484,6 +530,15 @@ def norm_boxes(boxes, shape):
     ])
     return ((boxes - shift) / scale).astype(np.float32)
 
+def norm_boxes_tf(boxes, shape):
+    '''Same as the function above, but using tensorflow to deal with tensors
+    '''
+    shape = tf.cast(shape, tf.float32)  # Cast the shapes of the image to float32
+    h, w = tf.split(shape, 2)           # Split in two sub-tensors
+    scale = tf.concat([h,w,h,w], axis=-1) - tf.constant(1.0)    # Concatenate h and w and reduce them all by 1
+    shift = tf.constant([0.,0.,1.,1.])
+    return tf.divide(boxes-shift, scale) 
+
 # Just the inverse function
 def denorm_boxes(boxes, shape):
     """Converts boxes from normalized coordinates to pixel coordinates.
@@ -500,6 +555,16 @@ def denorm_boxes(boxes, shape):
     scale = np.array([h - 1, w - 1, h - 1, w - 1])
     shift = np.array([0, 0, 1, 1])
     return np.around((boxes * scale) + shift).astype(np.int32)
+
+def denorm_boxes_tf(boxes, shape):
+    '''Same as the function above, but using tensorflow to deal with tensors
+    '''
+    shape = tf.cast(shape, tf.float32)  # Cast the shapes of the image to float32
+    h, w = tf.split(shape, 2)           # Split in two sub-tensors
+    scale = tf.concat([h,w,h,w], axis=-1) - tf.constant(1.0)    # Concatenate h and w and reduce them all by 1
+    shift = tf.constant([0.,0.,1.,1.])
+    return tf.cast(tf.round(tf.multiply(boxes, scale) + shift), tf.int32) # Cast back into pixels
+
 
 def get_anchors(image_shape):
     """Returns the anchor pyramid for the given image size"""
@@ -568,7 +633,7 @@ def detect(images, model: KM.Model):
     return preprocessed_images, rpn_classes, rpn_bboxes
 
 if __name__ == "__main__":
-    model = build()
+    model = build(EXECUTION_MODE)
     # We need to compile the model before using it
 
     # Test the detection with one image (stack it to simulate a batch)
