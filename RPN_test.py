@@ -319,9 +319,11 @@ def build(mode):
     # The Rest of the network does not use P6
 
     # TODO: ADD TRAINING CODE REGARDING ANCHORS ETC.
-
-    # In testing mode, anchors are given as input to the network
-    anchors = input_anchors
+    if mode == 'training':
+        raise NotImplementedError("Only inference mode is supported for now")
+    elif mode == 'evaluation':
+        # In testing mode, anchors are given as input to the network
+        anchors = input_anchors
 
     ### RPN MODEL ###
     # The RPN is a lightweight neural network that scans the image 
@@ -565,7 +567,6 @@ def denorm_boxes_tf(boxes, shape):
     shift = tf.constant([0.,0.,1.,1.])
     return tf.cast(tf.round(tf.multiply(boxes, scale) + shift), tf.int32) # Cast back into pixels
 
-
 def get_anchors(image_shape):
     """Returns the anchor pyramid for the given image size"""
     global ANCHOR_CACHE
@@ -607,6 +608,7 @@ def detect(images, model: KM.Model):
 
     Returns:
         preprocessed_images: the preprocessed images in a batch
+        anchors: the anchors for the image
         rpn_classes: the classes (fg/bg) predicted by the RPN and their probabilities
         rpn_boxes: the boxes predicted by the RPN
     '''
@@ -629,8 +631,8 @@ def detect(images, model: KM.Model):
     # Use the previously instanciated model to run prediction
     rpn_classes, rpn_bboxes = model.predict([preprocessed_images, anchors])
 
-    # Return the preprocessed images, classifications and bounding boxes from the RPN
-    return preprocessed_images, rpn_classes, rpn_bboxes
+    # Return the preprocessed images, anchors, classifications and bounding boxes from the RPN
+    return preprocessed_images,anchors, rpn_classes, rpn_bboxes
 
 if __name__ == "__main__":
     model = build(EXECUTION_MODE)
@@ -638,7 +640,7 @@ if __name__ == "__main__":
 
     # Test the detection with one image (stack it to simulate a batch)
     img = np.stack([mpimg.imread('res/elephant.jpg')])
-    mod_images, rpn_classes, rpn_bboxes = detect(img, model)
+    mod_images, anchors, rpn_classes, rpn_bboxes = detect(img, model)
 
     # Show each image sequentially and draw a selection of "the best" RPN bounding boxes.
     # Note that the model is not trained yet so "the best" boxes are really just random.
@@ -646,13 +648,15 @@ if __name__ == "__main__":
         image = mod_images[i, :, :]
         classes = rpn_classes[i,:,:]
         bboxes = rpn_bboxes[i, :, :]
+        anchors = anchors[i, :, :]
         # Select positive bboxes
         bboxes = bboxes[np.where(classes[:,0] > 0.5)]
         # Sort by probability
         rnd_bboxes = sorted(np.arange(0, bboxes.shape[0], 1),
-                            key=lambda x: classes[x, 1])[:200]
+                            key=lambda x: classes[x, 1])[:10]
         rnd_bboxes = bboxes[rnd_bboxes, :]
         rnd_bboxes = denorm_boxes(rnd_bboxes, image.shape[:2])
+        anchors = denorm_boxes(anchors, image.shape[:2])
         fig, ax = plt.subplots()
         # Note that the image was previously normalized so colors will be weird
         ax.imshow(image)
@@ -660,6 +664,12 @@ if __name__ == "__main__":
             rect = Rectangle(
                 (bb[0], bb[1]), bb[2]-bb[0], bb[3]-bb[1],
                 linewidth=1, edgecolor='r', facecolor='none'
+            )
+            ax.add_patch(rect)
+        for an in anchors[-3:]:
+            rect = Rectangle(
+                (an[0],an[1]),an[2]-an[0], an[3]-an[1],
+                linewidth=1, edgecolor='g', facecolor='none'
             )
             ax.add_patch(rect)
         plt.show()
