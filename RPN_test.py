@@ -243,7 +243,7 @@ def build(mode):
         # Zero-padded GT boxes in pixels
         # [batch, MAX_GT_INSTANCES, (y1,x1,y2,x2)] (in pixels)
         input_gt_boxes = KL.Input(
-            shape = [None], name = 'input_gt_class_ids', dtype = tf.int32
+            shape = [None], name = 'input_gt_boxes', dtype = tf.int32
         )
         # Normalize input coordinates
         gt_boxes = KL.Lambda(lambda x: norm_boxes_tf(
