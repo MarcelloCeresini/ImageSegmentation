@@ -26,6 +26,8 @@ IMAGE_MAX_DIM = 1024
 MEAN_PIXEL = np.array([123.7, 116.8, 103.9])
 # Define the image shape (1024x1024x3 if no changes to parameters are made)
 IMAGE_SHAPE = np.array([IMAGE_MAX_DIM, IMAGE_MAX_DIM, 3])
+# Batch size for training and testing
+BATCH_SIZE = 1
 
 ### BACKBONE RELATED CONSTANTS ###
 # Whether to use Resnet50 or Resnet101
@@ -45,11 +47,12 @@ BACKBONE_STRIDES = [4,8,16,32,64]
 TOP_DOWN_PYRAMID_SIZE = 256
 
 ### RPN RELATED CONSTANTS ###
-# Length of square anchor side in pixels
-# You can see it as an area of the anchor in pixels if the anchor was squared.
+# Scales for the anchor boxes. They represent the square-rooted area
+# of the anchor (so, a scale of 32 means that the anchor has an area of
+# 32^2 pixels). Mathematically, they are sqrt(width*height).
 RPN_ANCHOR_SCALES = (32, 64, 128, 256, 512)
 # Ratios of anchors at each cell (width/height)
-# A value of 1 represents a square anchor, and 0.5 is a wide anchor
+# A value of 1 represents a square anchor, and 2 is a wide anchor
 RPN_ANCHOR_RATIOS = [0.5, 1, 2]
 # Anchor stride
 # If 1 then anchors are created for each cell in the backbone feature map.
@@ -320,7 +323,19 @@ def build(mode):
 
     # TODO: ADD TRAINING CODE REGARDING ANCHORS ETC.
     if mode == 'training':
-        raise NotImplementedError("Only inference mode is supported for now")
+        # Anchors are not passes as input in training mode
+        anchors = get_anchors(IMAGE_SHAPE)
+        # As in the testing preparation code, anchors must be replicated
+        # in the batch dimension
+        anchors = np.broadcast_to(anchors, (BATCH_SIZE,) + anchors.shape)
+        # From TF documentation (https://www.tensorflow.org/guide/variable):
+        # A TensorFlow variable is the recommended way to represent shared, 
+        # persistent state your program manipulates.
+        # A tf.Variable represents a tensor whose value can be changed 
+        # by running ops on it. Specific ops allow you to read and modify 
+        # the values of this tensor.
+        # Basically, we need a layer that yields a tensor containing the anchors
+        anchors = KL.Lambda(lambda x: tf.Variable(anchors), name='anchors')(input_image)
     elif mode == 'evaluation':
         # In testing mode, anchors are given as input to the network
         anchors = input_anchors
@@ -463,18 +478,19 @@ def generate_anchors(scales, ratios, shape, feature_stride, anchor_stride):
     scales = scales.flatten()
     ratios = ratios.flatten()
 
-    # Ratios are width/height, scales are squared sizes of the sides of the anchors
-    # if the anchor was a square.
-    # Calculating the square root of the ratios we get the "average" unitary side of the anchor
-    # For example, sqrt(0.5), sqrt(1) and sqrt(2)
-    # If the square root is greater than 1, the width of the anchor box is greater than
-    # its height and the opposite is also true. 
-    # So, if we multiply scales for the square-rooted ratios, we get anchor widths
-    # (for example, with ratio 2, the square root is 1.4... and the width will therefore be longer
-    # than the one indicated in the "scales" array)
-    # With the same reasoning we can say that dividing the scales by the squre-rooted ratios we get
-    # heights.
-    # Thus, if we want the heights we need to compute:
+    # Ratios are width/height, scales are sqrt(width*height).
+    # To get actual widths and heights of the anchor boxes, we need to:
+    # - Take the square root of the ratios, so sqrt(width)/sqrt(height)
+    # - Multiply or divide these values with the scales in order to get
+    #   either the width or the height
+    #                 scales                  sqrt(ratios)
+    #   width = sqrt(width)*sqrt(height)*sqrt(width)/sqrt(height) = 
+    #   = sqrt(width)*sqrt(width) = sqrt(width)**2
+    #
+    #   Same for heights, but dividing for the square-rooted ratios so
+    #   that nominator and denominator get inverted and we simplify the
+    #   sqrt(width) term rather than the sqrt(height) which is our 
+    #   "target"
     heights = scales / np.sqrt(ratios)
     widths  = scales * np.sqrt(ratios)
 
@@ -626,7 +642,7 @@ def detect(images, model: KM.Model):
     # The original matterport implementation comments the following action
     # saying that Keras requires it. Basically, anchors are replicated among
     # the batch dimension. In our case, batch size is simply one.
-    anchors = np.broadcast_to(anchors, (1,) + anchors.shape)
+    anchors = np.broadcast_to(anchors, (BATCH_SIZE,) + anchors.shape)
 
     # Use the previously instanciated model to run prediction
     rpn_classes, rpn_bboxes = model.predict([preprocessed_images, anchors])
@@ -638,8 +654,8 @@ if __name__ == "__main__":
     model = build(EXECUTION_MODE)
     # We need to compile the model before using it
 
-    # Test the detection with one image (stack it to simulate a batch)
-    img = np.stack([mpimg.imread('res/elephant.jpg')])
+    # Test the detection with one image (stack it n times to simulate a batch)
+    img = np.stack([mpimg.imread('res/elephant.jpg')]*BATCH_SIZE)
     mod_images, anchors, rpn_classes, rpn_bboxes = detect(img, model)
 
     # Show each image sequentially and draw a selection of "the best" RPN bounding boxes.
