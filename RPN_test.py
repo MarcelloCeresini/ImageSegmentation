@@ -1,3 +1,9 @@
+# TODOs:
+# TODO: Add training code
+# TODO: Add the rest of Mask-RCNN
+# TODO: Check if logits are REALLY needed (they may be useless debug-only tensors)
+# TODO: Fix some comments in functions (mostly add output shapes and stuff)
+
 import math
 import numpy as np
 
@@ -86,7 +92,7 @@ def resnet_graph(input_image):
             include_top=False, # set to False to remove the classifier
             weights='imagenet', 
             input_tensor=input_image, 
-            pooling=None, # apply max pooling to last layer so it's a 2D tensor
+            pooling=None, # DON'T apply max pooling to last layer
         )
         C1 = model.get_layer('pool1_pool').output
         C2 = model.get_layer('conv2_block3_out').output
@@ -98,7 +104,7 @@ def resnet_graph(input_image):
             include_top=False, # set to False to remove the classifier
             weights='imagenet', 
             input_tensor=input_image, 
-            pooling=None, # apply max pooling to last layer so it's a 2D tensor
+            pooling=None, # DON'T apply max pooling to last layer
         )
         C1 = model.get_layer('pool1_pool').output
         C2 = model.get_layer('conv2_block3_out').output
@@ -116,15 +122,17 @@ def resnet_graph(input_image):
 def rpn_graph(feature_map, anchors_per_location, anchor_stride):
     '''Builds the actual computation graph of the RPN.
 
-    feature_map: backbone features [batch, height, width, depth]
-    anchors_per_location: number of anchors per pixel in the feature map
-    anchor_stride: Controls the density of anchors. Typically 1 (anchors for
+    Inputs: 
+        - feature_map: backbone features [batch, height, width, depth]
+        - anchors_per_location: number of anchors per pixel in the feature map
+        - anchor_stride: Controls the density of anchors. Typically 1 (anchors for
                    every pixel in the feature map), or 2 (every other pixel).
 
-    Returns:
-        rpn_class_logits: [batch, H * W * anchors_per_location, 2] Anchor classifier logits (before softmax)
-        rpn_probs: [batch, H * W * anchors_per_location, 2] Anchor classifier probabilities.
-        rpn_bbox: [batch, H * W * anchors_per_location, (dy, dx, log(dh), log(dw))] Deltas to be
+    Outputs:
+        - rpn_class_logits: [batch, H * W * anchors_per_location, 2] 
+            Anchor classifier logits (before softmax)
+        - rpn_probs: [batch, H * W * anchors_per_location, 2] Anchor classifier probabilities.
+        - rpn_bbox: [batch, H * W * anchors_per_location, (dy, dx, log(dh), log(dw))] Deltas to be
                   applied to anchors.
 
     '''
@@ -177,22 +185,25 @@ def rpn_graph(feature_map, anchors_per_location, anchor_stride):
 def build_rpn_model(anchor_stride, anchors_per_location, depth):
     '''Builds a Keras model for the RPN.
 
-    anchors_per_location: the number of anchors per pixel in the feature map.
+    Inputs: 
+    - anchors_per_location: the number of anchors per pixel in the feature map.
         Usually this number corresponds with the number of possible ratios of
         anchors
-    anchor_stride: the stride to apply to the anchors generation. 1 means: generate
+    - anchor_stride: the stride to apply to the anchors generation. 1 means: generate
         one anchor per pixel in the feature map, while 2 means one anchor
         every 2 pixels.
-    depth: depth of the backbone feature map
-
-    Returns a Keras Model, which itself outputs:
+    - depth: depth of the backbone feature map
 
     (Remember that each proposal is classified in one of two classes, namely
     foreground and background)
-    rpn_class_logits: [batch, H * W * anchors_per_location, 2] Anchor classifier logits (before softmax)
-    rpn_probs: [batch, H * W * anchors_per_location, 2] Anchor classifier probabilities.
-    rpn_bbox: [batch, H * W * anchors_per_location, (dy, dx, log(dh), log(dw))] Deltas to be
-                applied to anchors.
+
+    Outputs:
+        - a Keras Model, which itself outputs:
+            - rpn_class_logits: [batch, H * W * anchors_per_location, 2] 
+                Anchor classifier logits (before softmax)
+            - rpn_probs: [batch, H * W * anchors_per_location, 2] Anchor classifier probabilities.
+            - rpn_bbox: [batch, H * W * anchors_per_location, (dy, dx, log(dh), log(dw))] Deltas to be
+                        applied to anchors.
     '''
     input_feature_map = KL.Input(shape=[None,None, depth],
                             name='input_rpn_feature_map')
@@ -389,17 +400,18 @@ def resize_image(image, min_dim, max_dim):
     Resizes an image by keeping the aspect ratio unchanged and using zero-padding
     to reshape it to a square.
 
-    min_dim: the size of the smaller dimension
-    max_dim: ensures that the image's longest side doesn't exceed this value
+    Inputs:
+        - min_dim: the size of the smaller dimension
+        - max_dim: ensures that the image's longest side doesn't exceed this value
 
-    Returns:
-        image: the resized image
-        window: (y1,x1,y2,x2): since padding might be inserted in the returned image,
+    Outputs:
+        - image: the resized image
+        - window: (y1,x1,y2,x2): since padding might be inserted in the returned image,
             this window contains the coordinates of the image part in the full image.
             x2, y2 are not included, so the last "acceptable" line x2-1 and the last
             "acceptable" column is y2-1
-        scale: the scale factor used to resize the image
-        padding: type of padding added to the image [(top, bottom), (left, right), (0, 0)]
+        - scale: the scale factor used to resize the image
+        - padding: type of padding added to the image [(top, bottom), (left, right), (0, 0)]
     '''
     # Keep track of the image dtype to return the same dtype
     image_dtype = image.dtype
@@ -464,14 +476,20 @@ def preprocess_inputs(images):
 
 def generate_anchors(scales, ratios, shape, feature_stride, anchor_stride):
     """
-    scales: 1D array of anchor sizes in pixels. Example: [32, 64, 128]
-    ratios: 1D array of anchor ratios of width/height. Example: [0.5, 1, 2]
-    shape: [height, width] spatial shape of the feature map over which
-            to generate anchors. It corresponds with the shape of one of the
-            feature maps in the FPN (P2,P3,P4,P5,P6)
-    feature_stride: Stride of the feature map relative to the image in pixels.
-    anchor_stride: Stride of anchors on the feature map. For example, if the
-        value is 2 then generate anchors for every other feature map pixel.
+    Generate anchors for a given input shape
+
+    Inputs: 
+        - scales: 1D array of anchor sizes in pixels. Example: [32, 64, 128]
+        - ratios: 1D array of anchor ratios of width/height. Example: [0.5, 1, 2]
+        - shape: [height, width] spatial shape of the feature map over which
+                to generate anchors. It corresponds with the shape of one of the
+                feature maps in the FPN (P2,P3,P4,P5,P6)
+        - feature_stride: Stride of the feature map relative to the image in pixels.
+        - anchor_stride: Stride of anchors on the feature map. For example, if the
+            value is 2 then generate anchors for every other feature map pixel.
+    
+    Outputs:
+        - boxes: #TODO: add the shape of this output list
     """
     # Get all possible combinations of scales and ratios
     scales, ratios = np.meshgrid(np.array(scales), np.array(ratios))
@@ -527,14 +545,16 @@ def generate_anchors(scales, ratios, shape, feature_stride, anchor_stride):
 
 def norm_boxes(boxes, shape):
     """Converts boxes from pixel coordinates to normalized coordinates.
-    boxes: [N, (y1, x1, y2, x2)] in pixel coordinates
-    shape: (height, width) in pixels
+    
+    Inputs: 
+    - boxes: [N, (y1, x1, y2, x2)] in pixel coordinates
+    - shape: (height, width) in pixels
 
     Note: In pixel coordinates (y2, x2) is outside the box. But in normalized
     coordinates it's inside the box.
 
-    Returns:
-        [N, (y1, x1, y2, x2)] in normalized coordinates
+    Outputs:
+        - [N, (y1, x1, y2, x2)] in normalized coordinates
     """
     h, w = shape
     # Shift x2 and y2 back into the image boundaries
@@ -575,7 +595,8 @@ def denorm_boxes(boxes, shape):
     return np.around((boxes * scale) + shift).astype(np.int32)
 
 def denorm_boxes_tf(boxes, shape):
-    '''Same as the function above, but using tensorflow to deal with tensors
+    '''
+    Same as the function above, but using tensorflow operation to deal with tensors
     '''
     shape = tf.cast(shape, tf.float32)  # Cast the shapes of the image to float32
     h, w = tf.split(shape, 2)           # Split in two sub-tensors
@@ -584,7 +605,16 @@ def denorm_boxes_tf(boxes, shape):
     return tf.cast(tf.round(tf.multiply(boxes, scale) + shift), tf.int32) # Cast back into pixels
 
 def get_anchors(image_shape):
-    """Returns the anchor pyramid for the given image size"""
+    """
+    Returns the anchor pyramid for the given image shape
+
+    Inputs:
+        - image_shape: the shape of the input image
+    
+    Outputs:
+        - #TODO fill this with the output shape
+
+    """
     global ANCHOR_CACHE
     backbone_shapes = np.array([
         [int(math.ceil(image_shape[0] / stride)),
@@ -619,14 +649,17 @@ def detect(images, model: KM.Model):
     '''
     This function runs the detection pipeline.
 
-    images: a list of images, even of different sizes 
+    Inputs: 
+    - images: a list of images, even of different sizes 
         (they will be reshaped as zero-padded squares of the same dimensions)
+    - model: the model to run on the image (passed as input because it's easier
+        for testing)
 
-    Returns:
-        preprocessed_images: the preprocessed images in a batch
-        anchors: the anchors for the image
-        rpn_classes: the classes (fg/bg) predicted by the RPN and their probabilities
-        rpn_boxes: the boxes predicted by the RPN
+    Outputs:
+        - preprocessed_images: the preprocessed images in a batch
+        - anchors: the anchors for the image
+        - rpn_classes: the classes (fg/bg) predicted by the RPN and their probabilities
+        - rpn_boxes: the boxes predicted by the RPN
     '''
     preprocessed_images, windows = preprocess_inputs(images)
 
@@ -651,6 +684,9 @@ def detect(images, model: KM.Model):
     return preprocessed_images,anchors, rpn_classes, rpn_bboxes
 
 if __name__ == "__main__":
+    '''
+    Entry point for the code
+    '''
     model = build(EXECUTION_MODE)
     # We need to compile the model before using it
 
@@ -689,6 +725,3 @@ if __name__ == "__main__":
             )
             ax.add_patch(rect)
         plt.show()
-
-    # TODO Add training code
-    # TODO Add the rest of Mask-RCNN
