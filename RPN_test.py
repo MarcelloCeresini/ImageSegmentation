@@ -132,7 +132,7 @@ def rpn_graph(feature_map, anchors_per_location, anchor_stride):
         - rpn_class_logits: [batch, H * W * anchors_per_location, 2] 
             Anchor classifier logits (before softmax)
         - rpn_probs: [batch, H * W * anchors_per_location, 2] Anchor classifier probabilities.
-        - rpn_bbox: [batch, H * W * anchors_per_location, (dy, dx, log(dh), log(dw))] Deltas to be
+        - rpn_deltas: [batch, H * W * anchors_per_location, (dy, dx, log(dh), log(dw))] Deltas to be
                   applied to anchors.
 
     '''
@@ -146,7 +146,8 @@ def rpn_graph(feature_map, anchors_per_location, anchor_stride):
     # double the expected anchors per location, because for each anchor we have
     # a foreground and a background score. For example, if anchors per location is 3,
     # We would have 6 scores per each pixel.
-    # It's just a 1x1 convolution because we only need to create scores without touching the convolution
+    # It's just a 1x1 convolution because we only need to create scores without applying
+    # spatial transformations.
     # Also, we are not applying softmax yet because we might want to see the logits
     # Padding is valid but it's a 1x1 convolution so that doesn't really mean anything
     x = KL.Conv2D(2*anchors_per_location, (1,1), padding='valid', activation='linear',
@@ -163,23 +164,23 @@ def rpn_graph(feature_map, anchors_per_location, anchor_stride):
         "softmax", name="rpn_class_xxx"
     )(rpn_class_logits)
 
-    # Apply a bounding box refinement
+    # Compute a bounding box refinement
     # The output of this layer will be a [batch, H, W, anchors per location * 4] tensor
     # meaning that for each pixel of the previous feature map (H,W) we will have the anchors
     # we wanted (anchors_per_location), each described by 4 numbers.
     # These 4 numbers are actually:
-    # x,y: the refined center of the anchor
-    # log(w), log(h): the refined width and height of the anchor
+    # dx,dy: the refinement to apply to the center of the anchor
+    # log(w), log(h): the refinements of width and height of the anchor
     x = KL.Conv2D(anchors_per_location*4, (1,1), padding='valid',
-                    activation='linear', name='rpn_bbox_pred')(shared)
+                    activation='linear', name='rpn_deltas_pred')(shared)
     
     ## As done before, we reshape this output to [batch, anchors, 4]
-    rpn_bbox = KL.Lambda(
+    rpn_deltas = KL.Lambda(
         lambda t: tf.reshape(t, [tf.shape(t)[0], -1, 4])
     )(x)
 
     # Return the obtained tensors
-    return [rpn_class_logits, rpn_probs, rpn_bbox]
+    return [rpn_class_logits, rpn_probs, rpn_deltas]
 
 
 def build_rpn_model(anchor_stride, anchors_per_location, depth):
@@ -202,7 +203,7 @@ def build_rpn_model(anchor_stride, anchors_per_location, depth):
             - rpn_class_logits: [batch, H * W * anchors_per_location, 2] 
                 Anchor classifier logits (before softmax)
             - rpn_probs: [batch, H * W * anchors_per_location, 2] Anchor classifier probabilities.
-            - rpn_bbox: [batch, H * W * anchors_per_location, (dy, dx, log(dh), log(dw))] Deltas to be
+            - rpn_deltas: [batch, H * W * anchors_per_location, (dy, dx, log(dh), log(dw))] Deltas to be
                         applied to anchors.
     '''
     input_feature_map = KL.Input(shape=[None,None, depth],
@@ -375,18 +376,18 @@ def build(mode):
     # The asterisk makes zip "unzip" the list of lists by grouping the first, second, third... elements
     # Thus, outputs is exactly the list we wanted
     # Now, we want to concatenate the list of lists 
-    output_names = ["rpn_class_logits", "rpn_class", "rpn_bbox"]
+    output_names = ["rpn_class_logits", "rpn_classes", "rpn_deltas"]
     # Then, we concatenate all elements of the list as rows of three long tensors,
     # containing all logits, all class probabilities and all bounding boxes.
     outputs = [KL.Concatenate(axis=1, name=n)(list(o))
                 for o,n in zip(outputs, output_names)]
 
     # Finally, extract all tensors 
-    rpn_class_logits, rpn_class, rpn_bbox = outputs
+    rpn_class_logits, rpn_classes, rpn_deltas = outputs
 
     # Finally instantiate the Keras model and return it
     model = KM.Model(inputs=[input_image, input_anchors],
-                     outputs=[rpn_class, rpn_bbox],
+                     outputs=[rpn_classes, rpn_deltas],
                      name='rpn')
     
     return model
@@ -677,7 +678,7 @@ def detect(images, model: KM.Model):
     # the batch dimension. In our case, batch size is simply one.
     anchors = np.broadcast_to(anchors, (BATCH_SIZE,) + anchors.shape)
 
-    # Use the previously instanciated model to run prediction
+    # Use the previously instantiated model to run prediction
     rpn_classes, rpn_bboxes = model.predict([preprocessed_images, anchors])
 
     # Return the preprocessed images, anchors, classifications and bounding boxes from the RPN
