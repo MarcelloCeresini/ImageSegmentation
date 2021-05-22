@@ -14,6 +14,7 @@ from matplotlib.patches import Rectangle
 import tensorflow as tf
 import keras.layers as KL
 import keras.models as KM
+import keras.engine as KE
 import keras.backend as K
 
 from skimage.transform import resize
@@ -70,6 +71,20 @@ RPN_NMS_THRESHOLD = 0.7
 # How many anchors per image to use for RPN training
 RPN_TRAIN_ANCHORS_PER_IMAGE = 256
 
+# The RPN generates a high amount of ROIs by sliding anchors over the 
+# feature maps and calculating adjustments. We can reduce the amount
+# of ROIs via the NMS algorithm.
+# ROIs kept before non maximum suppression when ordering them by score
+# (for performance reasons)
+PRE_NMS_LIMIT = 6000
+# ROIs kept after non-maximum suppression (training and inference)
+POST_NMS_ROIS_TRAINING = 2000
+POST_NMS_ROIS_INFERENCE = 1000
+# Non-max suppression threshold to filter RPN proposals.
+# Can be increased during training to generate more propsals.
+RPN_NMS_THRESHOLD = 0.7
+
+
 # Anchor cache: when dealing with images of the same shape, we don't want
 # to calculate anchor coordinates over and over again, thus we mantain
 # a cache
@@ -77,6 +92,10 @@ ANCHOR_CACHE = {}
 
 # Execution mode: Training or Evaluation
 EXECUTION_MODE = 'evaluation' # or 'training
+
+##########################
+### NETWORK DEFINITION ###
+##########################
 
 ################
 ### BACKBONE ###
@@ -170,7 +189,14 @@ def rpn_graph(feature_map, anchors_per_location, anchor_stride):
     # we wanted (anchors_per_location), each described by 4 numbers.
     # These 4 numbers are actually:
     # dx,dy: the refinement to apply to the center of the anchor
-    # log(w), log(h): the refinements of width and height of the anchor
+    # log(dw), log(dh): the (log-space) refinements of width and height of the anchor
+    # The refinement will transform anchor boxes' center coordinates (ax, ay) and 
+    # width (aw) and height (ah) like so:
+    # 
+    # fx = ax + dx*aw (these are deltas that need to be scaled with the actual anchor measures)
+    # fy = ay + dy*ah
+    # fh = ah * e^(log(dh)) = ah * dh (instead here we use the delta to scale measures directly)
+    # fw = aw * dw
     x = KL.Conv2D(anchors_per_location*4, (1,1), padding='valid',
                     activation='linear', name='rpn_deltas_pred')(shared)
     
@@ -211,8 +237,144 @@ def build_rpn_model(anchor_stride, anchors_per_location, depth):
     outputs = rpn_graph(input_feature_map, anchors_per_location, anchor_stride)
     return KM.Model([input_feature_map], outputs, name='rpn_model')
 
+###########################
+# NMS and Bbox refinement #
+###########################
+
+def apply_box_deltas(boxes, deltas):
+    '''
+    Applies the given tensor of deltas to the given tensor of boxes
+
+    Inputs:
+    - boxes: [N, (y1,x1,y2,x2)] anchor boxes to update
+    - deltas: [N, (dy,dx,log(dh),log(dw))] refinements to apply to the boxes
+
+    Returns:
+    - result: [N, (ny1,nx1,ny2,nx2)] the refined boxes
+    '''
+    # Get all important values from the tensors
+    heights = boxes[:, 2] - boxes[:, 0]
+    widths  = boxes[:, 3] - boxes[:, 1]
+    center_y = boxes[:, 0] + heights*0.5
+    center_x = boxes[:, 1] + widths *0.5
+    # Apply deltas 
+    center_y = center_y + deltas[:, 0] * heights
+    center_x = center_x + deltas[:, 1] * widths
+    heights  = heights * tf.exp(deltas[:, 2])
+    widths   = widths  * tf.exp(deltas[:, 3])
+    # Convert back into y1,x1,y2,x2 coordinates
+    y1 = center_y - heights*0.5
+    y2 = y1 + heights
+    x1 = center_x - widths*0.5
+    x2 = x1 + widths
+    # Stack the measures in a new tensor
+    return tf.stack([y1,x1,y2,x2], axis=1, # Axis = 1 ensures that we stack on the rows, 
+                                           # so that the first column is all made of y1s,
+                                           # the second all made of x1s, ...
+                    name='apply_box_deltas')
+
+def clip_boxes(boxes, window):
+    """
+    Clips the tensor of boxes into the extremes defined in window
+
+    Inputs:
+    - boxes [N, (y1,x1,y2,x2)]
+    - window [4] in the form y1, x1, y2, x2: they represent the boudaries of the image
+    """
+    # Split the tensors for ease of use
+    wy1, wx1, wy2, wx2 = tf.split(window, 4)
+    y1, x1, y2, x2 = tf.split(boxes, 4, axis=1) # Split with vertical lines, so to keep batches
+    # Clip
+    # To ensure that any coordinate is in the defined range, we must:
+    # - Select the minimum between the coordinate and the maximum boundary
+    # - Select the maximum between this and the minimum boundary
+    # For example, when dealing with xs the first condition ensures that the coordinate
+    # doesn't go out of boundary on the right and the second that it doesn't go out of
+    # boundary on the left.
+    y1 = tf.maximum(tf.minimum(y1, wy2), wy1)
+    y2 = tf.maximum(tf.minimum(y2, wy2), wy1)
+    x1 = tf.maximum(tf.minimum(x1, wx2), wx1)
+    x2 = tf.maximum(tf.minimum(x2, wx2), wx1)
+    clipped = tf.stack([y1,x1,y2,x2], axis=1, name="clipped_boxes")
+    return clipped
+
+class RefinementLayer(KE.Layer):
+    '''
+    Receives anchor scores and selects a subset to pass as proposals
+    to the second part of the architecture.
+    - Applies bounding box refinement deltas to anchors
+    - Applies Non-Maximum suppression to limit overlaps between anchors
+
+    Inputs:
+    - A tensor containing 3 different tensors:
+        - rpn_probs : [batch, num_anchors, (bg prob, fg prob)]
+        - rpn_deltas: [batch, num_anchors, (dy, dx, log(dh), log(dw))]
+        - anchors: [batch, num_anchors, (y1, x1, y2, x2)] anchors in 
+        normalized coordinates
+
+    Outputs:
+    - Refined proposals in normalized coordinates [batch, rois, (y1, x1, y2, x2)]
+    '''
+    def __init__(self, proposal_count, nms_threshold, **kwargs):
+        super(RefinementLayer, self).__init__(**kwargs)
+        self.proposal_count = proposal_count
+        self.nms_threshold = nms_threshold
+
+    def call(self, inputs):
+        '''
+        Entry point for the layer call.
+        '''
+        # Box foreground scores
+        # Keep batch and num_anchors, ignore background probability
+        scores = inputs[0][:, :, 1] 
+        # Box deltas to be applied to the anchors
+        deltas = inputs[1]
+        # https://github.com/matterport/Mask_RCNN/issues/270#issuecomment-367602954
+        # In the original Matterport and also Faster-RCNN implementation, 
+        # the training targets are normalized because empirically it was found
+        # that regressors work better when their output is normalized, so
+        # when their mean is 0 and standard deviation is 1.
+        # To achieve this, the target are transformed by:
+        # 1) subtracting the mean of their coordinates
+        # 2) dividing by the standard deviation
+        # This means that the regressor outputs normalized coordinates,
+        # so at this point deltas are normalized. To get back to real coordinates,
+        # we should add the mean of the coordinates and multiply by the stdevs.
+        # Since deltas are distributed between positive and negative, we can
+        # assume that the mean is 0 and skip the first operation. The second operation
+        # is the one depicted below. Standard deviations of the coordinates are 
+        # precomputed or made up: the important thing is that they are kept consistent
+        # within testing and training.
+        # Uncomment and define a global constant keeping the STD_DEVs if needed.
+        # deltas *= np.reshape(np.array([0.1, 0.1, 0.2, 0.2]), [1, 1, 4])
+
+        # Anchors
+        anchors = inputs[2]
+
+        # Instead of applying refinements and NMS to all anchors (>20000 sometimes)
+        # for performance we can trim the set of refined anchors by taking the top
+        # k elements (ordering by scores of foreground-ness).
+        # If there are less than the number we have chosen, take all anchors instead
+        pre_nms_limit = tf.minimum(PRE_NMS_LIMIT, tf.shape(anchors)[1])
+        # This function returns both values and indices, but we only need the indices
+        top_indexes = tf.math.top_k(scores, k=pre_nms_limit, sorted=True,
+                                name='top_anchors_by_score').indices
+        # Reduce also scores and deltas tensors
+        # TODO: I changed this part a lot, check that tensors shapes remain the same
+        scores = tf.gather(scores, top_indexes, batch_dims=-1)
+        deltas = tf.gather(deltas, top_indexes, batch_dims=-1)
+        pre_nms_anchors = tf.gather(anchors, top_indexes, batch_dims=-1)
+
+        # Apply deltas to the anchors to get refined anchors.
+        boxes = apply_box_deltas(pre_nms_anchors, deltas)
+        # Clip to image boundaries (in normalized coordinates, clip in 0..1 range)
+        window = np.array([0,0,1,1], dtype=np.float32)
+        boxes = clip_boxes(boxes, window)
+
+        return boxes
+
 ##########################
-### NETWORK DEFINITION ###
+# COMPOSITION OF MODULES #
 ##########################
 
 class BadImageSizeException(Exception):
@@ -385,9 +547,19 @@ def build(mode):
     # Finally, extract all tensors 
     rpn_class_logits, rpn_classes, rpn_deltas = outputs
 
+    # The output of the RPN must be transformed in actual proposals for the rest of
+    # the network.
+    proposal_count = POST_NMS_ROIS_INFERENCE if mode == 'evaluation'\
+                else POST_NMS_ROIS_TRAINING
+    # Call the RefinementLayer to do NMS of anchors and apply box deltas
+    rpn_rois = RefinementLayer(
+        proposal_count=proposal_count,
+        nms_threshold=RPN_NMS_THRESHOLD,
+        name='ROI_refinement')([rpn_classes, rpn_deltas, anchors])
+
     # Finally instantiate the Keras model and return it
     model = KM.Model(inputs=[input_image, input_anchors],
-                     outputs=[rpn_classes, rpn_deltas],
+                     outputs=[rpn_classes, rpn_rois],
                      name='rpn')
     
     return model
@@ -444,9 +616,9 @@ def resize_image(image, min_dim, max_dim):
     window = (top_pad, left_pad, h + top_pad, w + left_pad)
     return image.astype(image_dtype), window, scale, padding
 
-##########################
-### DETECTION PIPELINE ###
-##########################
+#####################
+### PREPROCESSING ###
+#####################
 
 def preprocess_inputs(images):
     '''
@@ -474,6 +646,10 @@ def preprocess_inputs(images):
     preprocessed_inputs = np.stack(preprocessed_inputs)
     windows = np.stack(windows)
     return preprocessed_inputs, windows
+    
+######################
+### MISC UTILITIES ###
+######################
 
 def generate_anchors(scales, ratios, shape, feature_stride, anchor_stride):
     """
@@ -646,6 +822,10 @@ def get_anchors(image_shape):
         ANCHOR_CACHE[tuple(image_shape)] = anchors
     return ANCHOR_CACHE[tuple(image_shape)]
 
+##########################
+### DETECTION PIPELINE ###
+##########################
+
 def detect(images, model: KM.Model):
     '''
     This function runs the detection pipeline.
@@ -682,7 +862,11 @@ def detect(images, model: KM.Model):
     rpn_classes, rpn_bboxes = model.predict([preprocessed_images, anchors])
 
     # Return the preprocessed images, anchors, classifications and bounding boxes from the RPN
-    return preprocessed_images,anchors, rpn_classes, rpn_bboxes
+    return preprocessed_images, anchors, rpn_classes, rpn_bboxes
+
+###########################
+### MAIN (TESTING CODE) ###
+###########################
 
 if __name__ == "__main__":
     '''
