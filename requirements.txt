@@ -1,5 +1,4 @@
 tensorflow
 tensorflow_datasets
-keras
 matplotlib
 scikit-image>=0.14

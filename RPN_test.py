@@ -12,9 +12,10 @@ import matplotlib.image as mpimg
 from matplotlib.patches import Rectangle
 
 import tensorflow as tf
-import keras.layers as KL
-import keras.models as KM
-import keras.backend as K
+# Refer to TF's internal version of Keras for more stability
+import tensorflow.keras.layers as KL
+import tensorflow.keras.models as KM
+import tensorflow.keras.backend as K
 
 from skimage.transform import resize
 
@@ -372,7 +373,8 @@ def build(mode):
     # the second, etc. Instead, we want a list like [[A1,A2],[B1,B2],[C1,C2]] where
     # we relate the same things in different feature maps.
     outputs = list(zip(*layers_outputs))    
-    # The asterisk makes zip "unzip" the list of lists by grouping the first, second, third... elements
+    # The asterisk makes zip "unzip" the list of lists by grouping the first, second,
+    # third... elements
     # Thus, outputs is exactly the list we wanted
     # Now, we want to concatenate the list of lists 
     output_names = ["rpn_class_logits", "rpn_class", "rpn_bbox"]
@@ -573,7 +575,7 @@ def norm_boxes_tf(boxes, shape):
     '''
     shape = tf.cast(shape, tf.float32)  # Cast the shapes of the image to float32
     h, w = tf.split(shape, 2)           # Split in two sub-tensors
-    scale = tf.concat([h,w,h,w], axis=-1) - tf.constant(1.0)    # Concatenate h and w and reduce them all by 1
+    scale = tf.concat([h,w,h,w], axis=-1) - tf.constant(1.0) # Concatenate h and w and reduce them all by 1
     shift = tf.constant([0.,0.,1.,1.])
     return tf.divide(boxes-shift, scale) 
 
