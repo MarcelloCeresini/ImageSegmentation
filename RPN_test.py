@@ -359,11 +359,18 @@ class RefinementLayer(KL.Layer):
         # This function returns both values and indices, but we only need the indices
         top_indexes = tf.math.top_k(scores, k=pre_nms_limit, sorted=True,
                                 name='top_anchors_by_score').indices
+
         # Reduce also scores and deltas tensors
         # TODO: I changed this part a lot, check that tensors shapes remain the same
-        scores = tf.gather(scores, top_indexes, batch_dims=-1)
-        deltas = tf.gather(deltas, top_indexes, batch_dims=-1)
-        pre_nms_anchors = tf.gather(anchors, top_indexes, batch_dims=-1)
+        # Gather lets us index the scores array with a tensor of indices (top indexes).
+        # Since we can have multiple images in our batch (scores and top_indexes are both
+        # bi-dimensional array for this reason), batch_dims=1 tells the gather function to
+        # apply the first batch of indices to the first batch of scores/deltas/anchors, the
+        # second to the second, etc.
+        # https://www.tensorflow.org/api_docs/python/tf/gather#batching
+        scores = tf.gather(scores, top_indexes, batch_dims=1)
+        deltas = tf.gather(deltas, top_indexes, batch_dims=1)
+        pre_nms_anchors = tf.gather(anchors, top_indexes, batch_dims=1)
 
         # Apply deltas to the anchors to get refined anchors.
         boxes = apply_box_deltas(pre_nms_anchors, deltas)
@@ -884,11 +891,11 @@ if __name__ == "__main__":
     # Note that the model is not trained yet so "the best" boxes are really just random.
     for i in range(len(mod_images)):
         image = mod_images[i, :, :]
-        classes = rpn_classes[i,:,:]
+        classes = rpn_classes[i, :, :]
         bboxes = rpn_bboxes[i, :, :]
         anchors = anchors[i, :, :]
         # Select positive bboxes
-        bboxes = bboxes[np.where(classes[:,0] > 0.5)]
+        bboxes = bboxes[np.where(classes[:, 0] > 0.5)]
         # Sort by probability
         rnd_bboxes = sorted(np.arange(0, bboxes.shape[0], 1),
                             key=lambda x: classes[x, 1])[:10]
