@@ -298,7 +298,7 @@ def clip_boxes(boxes, window):
     clipped = tf.stack([y1,x1,y2,x2], axis=1, name="clipped_boxes")
     return clipped
 
-class RefinementLayer(KE.Layer):
+class RefinementLayer(KL.Layer):
     '''
     Receives anchor scores and selects a subset to pass as proposals
     to the second part of the architecture.
