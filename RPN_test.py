@@ -361,7 +361,7 @@ class RefinementLayer(KL.Layer):
                                 name='top_anchors_by_score').indices
 
         # Reduce also scores and deltas tensors
-        # TODO: I changed this part a lot, check that tensors shapes remain the same
+        # TODO: I changed this part a lot, check that tensors shapes are the same of the other code
         # Gather lets us index the scores array with a tensor of indices (top indexes).
         # Since we can have multiple images in our batch (scores and top_indexes are both
         # bi-dimensional array for this reason), batch_dims=1 tells the gather function to
@@ -373,6 +373,10 @@ class RefinementLayer(KL.Layer):
         pre_nms_anchors = tf.gather(anchors, top_indexes, batch_dims=1)
 
         # Apply deltas to the anchors to get refined anchors.
+        # Note: at this point, boxes is a [G,N,4] tensor, G being the elements in the batch,
+        # N being 6000 (or the number of pre-nms anchors). 
+        # We need to do apply the deltas for every item in the batch, so we use a lambda layer
+        # TODO!!!
         boxes = apply_box_deltas(pre_nms_anchors, deltas)
         # Clip to image boundaries (in normalized coordinates, clip in 0..1 range)
         window = np.array([0,0,1,1], dtype=np.float32)
