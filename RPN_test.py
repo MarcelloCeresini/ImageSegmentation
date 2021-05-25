@@ -241,49 +241,52 @@ def build_rpn_model(anchor_stride, anchors_per_location, depth):
 # NMS and Bbox refinement #
 ###########################
 
-def apply_box_deltas(boxes, deltas):
+def apply_box_deltas_batched(boxes, deltas):
     '''
     Applies the given tensor of deltas to the given tensor of boxes
 
     Inputs:
-    - boxes: [N, (y1,x1,y2,x2)] anchor boxes to update
-    - deltas: [N, (dy,dx,log(dh),log(dw))] refinements to apply to the boxes
+    - boxes: [B, N, (y1,x1,y2,x2)] anchor boxes to update
+    - deltas: [B, N, (dy,dx,log(dh),log(dw))] refinements to apply to the boxes
 
     Returns:
-    - result: [N, (ny1,nx1,ny2,nx2)] the refined boxes
+    - result: [B, N, (ny1,nx1,ny2,nx2)] the refined boxes
     '''
     # Get all important values from the tensors
-    heights = boxes[:, 2] - boxes[:, 0]
-    widths  = boxes[:, 3] - boxes[:, 1]
-    center_y = boxes[:, 0] + heights*0.5
-    center_x = boxes[:, 1] + widths *0.5
+    heights = boxes[:, :, 2] - boxes[:, :, 0]
+    widths  = boxes[:, :, 3] - boxes[:, :, 1]
+    center_y = boxes[:, :, 0] + heights*0.5
+    center_x = boxes[:, :, 1] + widths *0.5
     # Apply deltas 
-    center_y = center_y + deltas[:, 0] * heights
-    center_x = center_x + deltas[:, 1] * widths
-    heights  = heights * tf.exp(deltas[:, 2])
-    widths   = widths  * tf.exp(deltas[:, 3])
+    center_y = center_y + deltas[:, :, 0] * heights
+    center_x = center_x + deltas[:, :, 1] * widths
+    heights  = heights * tf.exp(deltas[:, :, 2])
+    widths   = widths  * tf.exp(deltas[:, :, 3])
     # Convert back into y1,x1,y2,x2 coordinates
     y1 = center_y - heights*0.5
     y2 = y1 + heights
     x1 = center_x - widths*0.5
     x2 = x1 + widths
     # Stack the measures in a new tensor
-    return tf.stack([y1,x1,y2,x2], axis=1, # Axis = 1 ensures that we stack on the rows, 
-                                           # so that the first column is all made of y1s,
-                                           # the second all made of x1s, ...
+    return tf.stack([y1,x1,y2,x2], axis=2, # Axis = 2 ensures that we stack on the inner
+                                           # dimension, so that we obtain a batch with
+                                           # the desired number of 4-elements tensors.
                     name='apply_box_deltas')
 
-def clip_boxes(boxes, window):
+def clip_boxes_batched(boxes, window):
     """
     Clips the tensor of boxes into the extremes defined in window
 
     Inputs:
-    - boxes [N, (y1,x1,y2,x2)]
-    - window [4] in the form y1, x1, y2, x2: they represent the boudaries of the image
+    - boxes [B, N, (y1,x1,y2,x2)]
+    - window [4] in the form y1, x1, y2, x2: they represent the boundaries of the image
     """
     # Split the tensors for ease of use
     wy1, wx1, wy2, wx2 = tf.split(window, 4)
-    y1, x1, y2, x2 = tf.split(boxes, 4, axis=1) # Split with vertical lines, so to keep batches
+    y1 = boxes[:,:,0]
+    x1 = boxes[:,:,1]
+    y2 = boxes[:,:,2]
+    x2 = boxes[:,:,2]
     # Clip
     # To ensure that any coordinate is in the defined range, we must:
     # - Select the minimum between the coordinate and the maximum boundary
@@ -295,7 +298,7 @@ def clip_boxes(boxes, window):
     y2 = tf.maximum(tf.minimum(y2, wy2), wy1)
     x1 = tf.maximum(tf.minimum(x1, wx2), wx1)
     x2 = tf.maximum(tf.minimum(x2, wx2), wx1)
-    clipped = tf.stack([y1,x1,y2,x2], axis=1, name="clipped_boxes")
+    clipped = tf.stack([y1,x1,y2,x2], axis=2, name="clipped_boxes")
     return clipped
 
 class RefinementLayer(KL.Layer):
@@ -375,14 +378,15 @@ class RefinementLayer(KL.Layer):
         # Apply deltas to the anchors to get refined anchors.
         # Note: at this point, boxes is a [G,N,4] tensor, G being the elements in the batch,
         # N being 6000 (or the number of pre-nms anchors). 
-        # We need to do apply the deltas for every item in the batch, so we use a lambda layer
-        # TODO!!!
-        boxes = apply_box_deltas(pre_nms_anchors, deltas)
+        # We need to do apply the deltas for every item in the batch.
+        boxes = apply_box_deltas_batched(pre_nms_anchors, deltas)
         # Clip to image boundaries (in normalized coordinates, clip in 0..1 range)
         window = np.array([0,0,1,1], dtype=np.float32)
-        boxes = clip_boxes(boxes, window)
+        boxes = clip_boxes_batched(boxes, window)
+        return boxes, top_indexes
 
-        return boxes
+    def compute_output_shape(self, input_shape):
+        return (None, PRE_NMS_LIMIT, 4) # TODO Change this with self.proposal_count after nms implementation
 
 ##########################
 # COMPOSITION OF MODULES #
@@ -564,11 +568,12 @@ def build(mode):
     proposal_count = POST_NMS_ROIS_INFERENCE if mode == 'evaluation'\
                 else POST_NMS_ROIS_TRAINING
     # Call the RefinementLayer to do NMS of anchors and apply box deltas
-    rpn_rois = RefinementLayer(
+    rpn_rois, indexes = RefinementLayer(
         proposal_count=proposal_count,
         nms_threshold=RPN_NMS_THRESHOLD,
         name='ROI_refinement')([rpn_classes, rpn_deltas, anchors])
 
+    rpn_classes = tf.gather(rpn_classes, indexes, batch_dims=1)
     # Finally instantiate the Keras model and return it
     model = KM.Model(inputs=[input_image, input_anchors],
                      outputs=[rpn_classes, rpn_rois],
@@ -874,7 +879,7 @@ def detect(images, model: KM.Model):
     rpn_classes, rpn_bboxes = model.predict([preprocessed_images, anchors])
 
     # Return the preprocessed images, anchors, classifications and bounding boxes from the RPN
-    return preprocessed_images, anchors, rpn_classes, rpn_bboxes
+    return preprocessed_images, rpn_classes, rpn_bboxes
 
 ###########################
 ### MAIN (TESTING CODE) ###
@@ -889,7 +894,12 @@ if __name__ == "__main__":
 
     # Test the detection with one image (stack it n times to simulate a batch)
     img = np.stack([mpimg.imread('res/elephant.jpg')]*BATCH_SIZE)
-    mod_images, anchors, rpn_classes, rpn_bboxes = detect(img, model)
+    mod_images, rpn_classes, rpn_bboxes = detect(img, model)
+
+    print("Shape of rpn_classes: {}".format(tf.shape(rpn_classes)))
+    print("Shape of rpn_bboxes: {}".format(tf.shape(rpn_bboxes)))
+
+    BBOXES_TO_DRAW = 50
 
     # Show each image sequentially and draw a selection of "the best" RPN bounding boxes.
     # Note that the model is not trained yet so "the best" boxes are really just random.
@@ -897,15 +907,16 @@ if __name__ == "__main__":
         image = mod_images[i, :, :]
         classes = rpn_classes[i, :, :]
         bboxes = rpn_bboxes[i, :, :]
-        anchors = anchors[i, :, :]
         # Select positive bboxes
-        bboxes = bboxes[np.where(classes[:, 0] > 0.5)]
+        condition = np.where(classes[:, 0] > 0.5)[0]
+        # If there is at least a positive bbox, draw it, otherwise draw random ones
+        if len(condition): 
+            bboxes = bboxes[condition]
         # Sort by probability
         rnd_bboxes = sorted(np.arange(0, bboxes.shape[0], 1),
-                            key=lambda x: classes[x, 1])[:10]
+                            key=lambda x, c=classes: c[x, 1])[:BBOXES_TO_DRAW]
         rnd_bboxes = bboxes[rnd_bboxes, :]
         rnd_bboxes = denorm_boxes(rnd_bboxes, image.shape[:2])
-        anchors = denorm_boxes(anchors, image.shape[:2])
         fig, ax = plt.subplots()
         # Note that the image was previously normalized so colors will be weird
         ax.imshow(image)
@@ -913,12 +924,6 @@ if __name__ == "__main__":
             rect = Rectangle(
                 (bb[0], bb[1]), bb[2]-bb[0], bb[3]-bb[1],
                 linewidth=1, edgecolor='r', facecolor='none'
-            )
-            ax.add_patch(rect)
-        for an in anchors[-3:]:
-            rect = Rectangle(
-                (an[0],an[1]),an[2]-an[0], an[3]-an[1],
-                linewidth=1, edgecolor='g', facecolor='none'
             )
             ax.add_patch(rect)
         plt.show()
