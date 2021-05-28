@@ -549,10 +549,7 @@ def build(mode):
     # A,B,C are logits, probabilities and bboxes of layer 1 in the first list, layer 2 in
     # the second, etc. Instead, we want a list like [[A1,A2],[B1,B2],[C1,C2]] where
     # we relate the same things in different feature maps.
-    outputs = list(zip(*layers_outputs))    
-    # The asterisk makes zip "unzip" the list of lists by grouping the first, second,
-    # third... elements
-    # Thus, outputs is exactly the list we wanted
+    outputs = [[c[x] for c in layers_outputs] for x in range(len(layers_outputs[0]))]
     # Now, we want to concatenate the list of lists 
     output_names = ["rpn_class_logits", "rpn_classes", "rpn_deltas"]
     # Then, we concatenate all elements of the list as rows of three long tensors,
