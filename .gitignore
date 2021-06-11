@@ -6,6 +6,10 @@ saved_models
 ## VIRTUAL ENVS ##
 env
 
+# TEMPORARY FILES
+*.pyc
+*__pycache__
+
 ## IDE STUFF ##
 .vscode
 .metals

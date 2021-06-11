@@ -286,7 +286,7 @@ def clip_boxes_batched(boxes, window):
     y1 = boxes[:,:,0]
     x1 = boxes[:,:,1]
     y2 = boxes[:,:,2]
-    x2 = boxes[:,:,2]
+    x2 = boxes[:,:,3]
     # Clip
     # To ensure that any coordinate is in the defined range, we must:
     # - Select the minimum between the coordinate and the maximum boundary
@@ -512,7 +512,7 @@ def build(mode):
 
     # TODO: ADD TRAINING CODE REGARDING ANCHORS ETC.
     if mode == 'training':
-        # Anchors are not passes as input in training mode
+        # Anchors are not passed as input in training mode
         anchors = get_anchors(IMAGE_SHAPE)
         # As in the testing preparation code, anchors must be replicated
         # in the batch dimension
@@ -564,6 +564,7 @@ def build(mode):
     # the network.
     proposal_count = POST_NMS_ROIS_INFERENCE if mode == 'evaluation'\
                 else POST_NMS_ROIS_TRAINING
+
     # Call the RefinementLayer to do NMS of anchors and apply box deltas
     rpn_rois, indexes = RefinementLayer(
         proposal_count=proposal_count,
@@ -651,8 +652,9 @@ def preprocess_inputs(images):
         preprocessed_image, window, scale, padding = resize_image(
             image, IMAGE_MIN_DIM, IMAGE_MAX_DIM
         )
-        # We want a normalized image, so we subtract the mean pixel to it
-        # and convert to float.
+        # In this case, for "normalize" we mean taking the image,
+        # subtracting the mean pixel to it
+        # and converting the result to float.
         preprocessed_image = preprocessed_image.astype(np.float32) - MEAN_PIXEL
         preprocessed_inputs.append(preprocessed_image)
         windows.append(window)
@@ -896,7 +898,7 @@ if __name__ == "__main__":
     print("Shape of rpn_classes: {}".format(tf.shape(rpn_classes)))
     print("Shape of rpn_bboxes: {}".format(tf.shape(rpn_bboxes)))
 
-    BBOXES_TO_DRAW = 50
+    BBOXES_TO_DRAW = 100
 
     # Show each image sequentially and draw a selection of "the best" RPN bounding boxes.
     # Note that the model is not trained yet so "the best" boxes are really just random.
@@ -908,6 +910,7 @@ if __name__ == "__main__":
         condition = np.where(classes[:, 0] > 0.5)[0]
         # If there is at least a positive bbox, draw it, otherwise draw random ones
         if len(condition): 
+            print("Foreground Bounding Boxes have been found.")
             bboxes = bboxes[condition]
         # Sort by probability
         rnd_bboxes = sorted(np.arange(0, bboxes.shape[0], 1),
