@@ -323,6 +323,34 @@ class RefinementLayer(KL.Layer):
         self.proposal_count = proposal_count
         self.nms_threshold = nms_threshold
 
+    def batched_nms_suppression(self, boxes, scores):
+        '''
+        Received boxes and their scores in a batch for potentially multiple images
+        and returns the amount of boxes specified in self.proposal_count using the 
+        NMS algorithm with a IoU threshold of self.nms_threshold.
+
+        Inputs:
+        - boxes [B, N, (y1,x1,y2,x2)]
+        - scores [B, N]
+
+        Outputs:
+        - selected_boxes [B, self.proposal_count]
+        '''
+        selected_idxs = []
+        # For each image in the batch
+        for i in range(len(boxes)):
+            b = boxes[i, :, :],
+            s = scores[i, :]
+            # Use Tensorflow's non maximum suppression algorithm implementation
+            # by fixing our preferred threshold and maximum output number
+            selected_indexes = tf.image.non_max_suppression(b, s, 
+                                            max_output_size=self.proposal_count,
+                                            iou_threshold=self.nms_threshold)
+            selected_idxs.append(selected_indexes)
+        selected_idxs = tf.stack(selected_idxs)
+        selected_boxes = tf.gather(boxes, selected_idxs, batch_dims=1)
+        return selected_boxes
+
     def call(self, inputs):
         '''
         Entry point for the layer call.
@@ -383,10 +411,13 @@ class RefinementLayer(KL.Layer):
         # Clip to image boundaries (in normalized coordinates, clip in 0..1 range)
         window = np.array([0,0,1,1], dtype=np.float32)
         boxes = clip_boxes_batched(boxes, window)
+        # Apply non maximum suppression
+        # TODO not working yet
+        # boxes = self.batched_nms_suppression(boxes, scores)
         return boxes, top_indexes
 
     def compute_output_shape(self, input_shape):
-        return (None, PRE_NMS_LIMIT, 4) # TODO Change this with self.proposal_count after nms implementation
+        return (None, self.proposal_count, 4)
 
 ##########################
 # COMPOSITION OF MODULES #
