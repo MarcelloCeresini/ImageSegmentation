@@ -323,34 +323,6 @@ class RefinementLayer(KL.Layer):
         self.proposal_count = proposal_count
         self.nms_threshold = nms_threshold
 
-    def batched_nms_suppression(self, boxes, scores):
-        '''
-        Received boxes and their scores in a batch for potentially multiple images
-        and returns the amount of boxes specified in self.proposal_count using the 
-        NMS algorithm with a IoU threshold of self.nms_threshold.
-
-        Inputs:
-        - boxes [B, N, (y1,x1,y2,x2)]
-        - scores [B, N]
-
-        Outputs:
-        - selected_boxes [B, self.proposal_count]
-        '''
-        selected_idxs = []
-        # For each image in the batch
-        for i in range(len(boxes)):
-            b = boxes[i, :, :],
-            s = scores[i, :]
-            # Use Tensorflow's non maximum suppression algorithm implementation
-            # by fixing our preferred threshold and maximum output number
-            selected_indexes = tf.image.non_max_suppression(b, s, 
-                                            max_output_size=self.proposal_count,
-                                            iou_threshold=self.nms_threshold)
-            selected_idxs.append(selected_indexes)
-        selected_idxs = tf.stack(selected_idxs)
-        selected_boxes = tf.gather(boxes, selected_idxs, batch_dims=1)
-        return selected_boxes
-
     def call(self, inputs):
         '''
         Entry point for the layer call.
@@ -411,10 +383,13 @@ class RefinementLayer(KL.Layer):
         # Clip to image boundaries (in normalized coordinates, clip in 0..1 range)
         window = np.array([0,0,1,1], dtype=np.float32)
         boxes = clip_boxes_batched(boxes, window)
-        # Apply non maximum suppression
-        # TODO not working yet
-        # boxes = self.batched_nms_suppression(boxes, scores)
-        return boxes, top_indexes
+        # Apply non maximum suppression using tensorflow's implementation of a batched NMS
+        nmsed_boxes, nmsed_scores, _, _ = tf.image.combined_non_max_suppression(
+                                                tf.expand_dims(boxes, 2),
+                                                tf.expand_dims(scores,2),
+                                                self.proposal_count, self.proposal_count,
+                                                self.nms_threshold)
+        return nmsed_boxes, nmsed_scores
 
     def compute_output_shape(self, input_shape):
         return (None, self.proposal_count, 4)
@@ -597,12 +572,11 @@ def build(mode):
                 else POST_NMS_ROIS_TRAINING
 
     # Call the RefinementLayer to do NMS of anchors and apply box deltas
-    rpn_rois, indexes = RefinementLayer(
+    rpn_rois, rpn_classes = RefinementLayer(
         proposal_count=proposal_count,
         nms_threshold=RPN_NMS_THRESHOLD,
         name='ROI_refinement')([rpn_classes, rpn_deltas, anchors])
 
-    rpn_classes = tf.gather(rpn_classes, indexes, batch_dims=1)
     # Finally instantiate the Keras model and return it
     model = KM.Model(inputs=[input_image, input_anchors],
                      outputs=[rpn_classes, rpn_rois],
@@ -929,23 +903,23 @@ if __name__ == "__main__":
     print("Shape of rpn_classes: {}".format(tf.shape(rpn_classes)))
     print("Shape of rpn_bboxes: {}".format(tf.shape(rpn_bboxes)))
 
-    BBOXES_TO_DRAW = 100
+    BBOXES_TO_DRAW = 200
 
     # Show each image sequentially and draw a selection of "the best" RPN bounding boxes.
     # Note that the model is not trained yet so "the best" boxes are really just random.
     for i in range(len(mod_images)):
         image = mod_images[i, :, :]
-        classes = rpn_classes[i, :, :]
+        classes = rpn_classes[i, :]
         bboxes = rpn_bboxes[i, :, :]
         # Select positive bboxes
-        condition = np.where(classes[:, 0] > 0.5)[0]
+        condition = np.where(classes > 0.5)[0]
         # If there is at least a positive bbox, draw it, otherwise draw random ones
         if len(condition): 
             print("Foreground Bounding Boxes have been found.")
             bboxes = bboxes[condition]
         # Sort by probability
         rnd_bboxes = sorted(np.arange(0, bboxes.shape[0], 1),
-                            key=lambda x, c=classes: c[x, 1])[:BBOXES_TO_DRAW]
+                            key=lambda x, c=classes: c[x])[:BBOXES_TO_DRAW]
         rnd_bboxes = bboxes[rnd_bboxes, :]
         rnd_bboxes = denorm_boxes(rnd_bboxes, image.shape[:2])
         fig, ax = plt.subplots()
