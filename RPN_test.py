@@ -389,6 +389,9 @@ class RefinementLayer(KL.Layer):
                                                 tf.expand_dims(scores,2),
                                                 self.proposal_count, self.proposal_count,
                                                 self.nms_threshold)
+        # The original code adds padding to these tensors, in case the self.proposal_count
+        # requirement is not respected, but this is only required when dealing with very 
+        # small images. I think we are fine without it, for now.
         return nmsed_boxes, nmsed_scores
 
     def compute_output_shape(self, input_shape):
