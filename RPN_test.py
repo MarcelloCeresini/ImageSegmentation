@@ -38,7 +38,7 @@ BATCH_SIZE = 1
 
 ### BACKBONE RELATED CONSTANTS ###
 # Whether to use Resnet50 or Resnet101
-BACKBONE_NETWORK = 'resnet50' # or 'resnet101'
+BACKBONE_NETWORK = 'resnet50'  # or 'resnet101'
 
 # Strides used for computing the shape of each stage of the backbone network
 # (when based on resnet50/101).
@@ -47,7 +47,7 @@ BACKBONE_NETWORK = 'resnet50' # or 'resnet101'
 # second one we divide by 8 and so on. The last feature map (P6) is 1024/64=16.
 # With these ratio indications we can easily express the relationship between a 
 # feature map and the original image.
-BACKBONE_STRIDES = [4,8,16,32,64]
+BACKBONE_STRIDES = [4, 8, 16, 32, 64]
 
 ### FPN RELATED CONSTANTS ###
 # Size of the top-down layers used to build the feature pyramid
@@ -65,9 +65,6 @@ RPN_ANCHOR_RATIOS = [0.5, 1, 2]
 # If 1 then anchors are created for each cell in the backbone feature map.
 # If 2, then anchors are created for every other cell, and so on.
 RPN_ANCHOR_STRIDE = 1
-# Non-max suppression threshold to filter RPN proposals.
-# You can increase this during training to generate more propOsals.
-RPN_NMS_THRESHOLD = 0.7
 # How many anchors per image to use for RPN training
 RPN_TRAIN_ANCHORS_PER_IMAGE = 256
 
@@ -81,9 +78,22 @@ PRE_NMS_LIMIT = 6000
 POST_NMS_ROIS_TRAINING = 2000
 POST_NMS_ROIS_INFERENCE = 1000
 # Non-max suppression threshold to filter RPN proposals.
-# Can be increased during training to generate more propsals.
+# You can increase this during training to generate more proposals.
 RPN_NMS_THRESHOLD = 0.7
 
+# How many training targets for the RPN we want to generate for each image.
+# The Mask RCNN paper uses 512 but often the RPN doesn't generate
+# enough positive proposals to fill this, so it's reduced to 256.
+# To increase it, we should also decrease the RPN NMS threshold so that
+# more proposals are generated.
+TRAIN_ROIS_PER_IMAGE = 256
+
+# Maximum number of ground truth instances to use in one image
+MAX_GT_INSTANCES = 100
+
+# Output mask shape
+# TODO: What is this exactly?
+MASK_SHAPE = [28, 28]
 
 # Anchor cache: when dealing with images of the same shape, we don't want
 # to calculate anchor coordinates over and over again, thus we mantain
@@ -91,7 +101,8 @@ RPN_NMS_THRESHOLD = 0.7
 ANCHOR_CACHE = {}
 
 # Execution mode: Training or Evaluation
-EXECUTION_MODE = 'evaluation' # or 'training
+EXECUTION_MODE = 'evaluation'  # or 'training
+
 
 ##########################
 ### NETWORK DEFINITION ###
@@ -104,14 +115,15 @@ EXECUTION_MODE = 'evaluation' # or 'training
 class InvalidBackboneError(Exception):
     pass
 
+
 def resnet_graph(input_image):
     # Return the 5 shared convolutional layers
     if BACKBONE_NETWORK == 'resnet101':
         model = tf.keras.applications.ResNet101(
-            include_top=False, # set to False to remove the classifier
-            weights='imagenet', 
-            input_tensor=input_image, 
-            pooling=None, # DON'T apply max pooling to last layer
+            include_top=False,  # set to False to remove the classifier
+            weights='imagenet',
+            input_tensor=input_image,
+            pooling=None,  # DON'T apply max pooling to last layer
         )
         C1 = model.get_layer('pool1_pool').output
         C2 = model.get_layer('conv2_block3_out').output
@@ -120,10 +132,10 @@ def resnet_graph(input_image):
         C5 = model.get_layer('conv5_block3_out').output
     elif BACKBONE_NETWORK == 'resnet50':
         model = tf.keras.applications.ResNet50(
-            include_top=False, # set to False to remove the classifier
-            weights='imagenet', 
-            input_tensor=input_image, 
-            pooling=None, # DON'T apply max pooling to last layer
+            include_top=False,  # set to False to remove the classifier
+            weights='imagenet',
+            input_tensor=input_image,
+            pooling=None,  # DON'T apply max pooling to last layer
         )
         C1 = model.get_layer('pool1_pool').output
         C2 = model.get_layer('conv2_block3_out').output
@@ -131,36 +143,37 @@ def resnet_graph(input_image):
         C4 = model.get_layer('conv4_block6_out').output
         C5 = model.get_layer('conv5_block3_out').output
     else:
-        raise(InvalidBackboneError('The selected backbone is not yet supported'))
-    return [C1,C2,C3,C4,C5]
+        raise (InvalidBackboneError('The selected backbone is not yet supported'))
+    return [C1, C2, C3, C4, C5]
+
 
 ###########
 ### RPN ###
 ###########
 
 def rpn_graph(feature_map, anchors_per_location, anchor_stride):
-    '''Builds the actual computation graph of the RPN.
+    """Builds the actual computation graph of the RPN.
 
-    Inputs: 
+    Inputs:
         - feature_map: backbone features [batch, height, width, depth]
         - anchors_per_location: number of anchors per pixel in the feature map
         - anchor_stride: Controls the density of anchors. Typically 1 (anchors for
                    every pixel in the feature map), or 2 (every other pixel).
 
     Outputs:
-        - rpn_class_logits: [batch, H * W * anchors_per_location, 2] 
+        - rpn_class_logits: [batch, H * W * anchors_per_location, 2]
             Anchor classifier logits (before softmax)
         - rpn_probs: [batch, H * W * anchors_per_location, 2] Anchor classifier probabilities.
         - rpn_deltas: [batch, H * W * anchors_per_location, (dy, dx, log(dh), log(dw))] Deltas to be
                   applied to anchors.
 
-    '''
+    """
     # Make the feature map deeper
     # The result is the convolutional layer on which the RPN will evaluate anchors
-    shared = KL.Conv2D(512, (3,3), padding='same', activation='relu',
-                        strides=anchor_stride,
-                        name='rpn_conv_shared')(feature_map)
-    
+    shared = KL.Conv2D(512, (3, 3), padding='same', activation='relu',
+                       strides=anchor_stride,
+                       name='rpn_conv_shared')(feature_map)
+
     # This convolutional layer stores the anchor scores. As you can see, there are
     # double the expected anchors per location, because for each anchor we have
     # a foreground and a background score. For example, if anchors per location is 3,
@@ -169,8 +182,8 @@ def rpn_graph(feature_map, anchors_per_location, anchor_stride):
     # spatial transformations.
     # Also, we are not applying softmax yet because we might want to see the logits
     # Padding is valid but it's a 1x1 convolution so that doesn't really mean anything
-    x = KL.Conv2D(2*anchors_per_location, (1,1), padding='valid', activation='linear',
-                   name='rpn_class_raw')(shared)
+    x = KL.Conv2D(2 * anchors_per_location, (1, 1), padding='valid', activation='linear',
+                  name='rpn_class_raw')(shared)
 
     # Reshape the scores to [batch, anchors, 2]
     # Note that the -1 means that the number of anchors is inferred from the other dimensions
@@ -197,9 +210,9 @@ def rpn_graph(feature_map, anchors_per_location, anchor_stride):
     # fy = ay + dy*ah
     # fh = ah * e^(log(dh)) = ah * dh (instead here we use the delta to scale measures directly)
     # fw = aw * dw
-    x = KL.Conv2D(anchors_per_location*4, (1,1), padding='valid',
-                    activation='linear', name='rpn_deltas_pred')(shared)
-    
+    x = KL.Conv2D(anchors_per_location * 4, (1, 1), padding='valid',
+                  activation='linear', name='rpn_deltas_pred')(shared)
+
     ## As done before, we reshape this output to [batch, anchors, 4]
     rpn_deltas = KL.Lambda(
         lambda t: tf.reshape(t, [tf.shape(t)[0], -1, 4])
@@ -210,9 +223,9 @@ def rpn_graph(feature_map, anchors_per_location, anchor_stride):
 
 
 def build_rpn_model(anchor_stride, anchors_per_location, depth):
-    '''Builds a Keras model for the RPN.
+    """Builds a Keras model for the RPN.
 
-    Inputs: 
+    Inputs:
     - anchors_per_location: the number of anchors per pixel in the feature map.
         Usually this number corresponds with the number of possible ratios of
         anchors
@@ -226,23 +239,133 @@ def build_rpn_model(anchor_stride, anchors_per_location, depth):
 
     Outputs:
         - a Keras Model, which itself outputs:
-            - rpn_class_logits: [batch, H * W * anchors_per_location, 2] 
+            - rpn_class_logits: [batch, H * W * anchors_per_location, 2]
                 Anchor classifier logits (before softmax)
             - rpn_probs: [batch, H * W * anchors_per_location, 2] Anchor classifier probabilities.
             - rpn_deltas: [batch, H * W * anchors_per_location, (dy, dx, log(dh), log(dw))] Deltas to be
                         applied to anchors.
-    '''
-    input_feature_map = KL.Input(shape=[None,None, depth],
-                            name='input_rpn_feature_map')
+    """
+    input_feature_map = KL.Input(shape=[None, None, depth],
+                                 name='input_rpn_feature_map')
     outputs = rpn_graph(input_feature_map, anchors_per_location, anchor_stride)
     return KM.Model([input_feature_map], outputs, name='rpn_model')
+
+#######################
+# RPN Training Layers #
+#######################
+class DetectionTargetLayer(KL.Layer):
+    """
+    Subsamples RPN's proposals and generates box refinements, class_ids and masks
+    for each chosen target. The target will be used for training the RPN.
+
+    TODO: how is a target ROI chosen?
+    
+    Inputs:
+    - proposals: [batch, N, (y1,x1,y2,x2)] in normalized coordinates.
+        If there are not enough proposals, it might be a zero-padded array.
+    - gt_class_ids: [batch, MAX_GT_INSTANCES] Integer representing class IDs.
+    - gt_boxes: [batch, MAX_GT_INSTANCES, (y1,x1,y2,x2)] in normalized coordinates.
+    - gt_masks: [batch, height, width, MAX_GT_INSTANCES] of boolean type, representing
+        where the groundtruth boxes are on the image pixels.
+
+    Returns:
+    - rois: [batch, TRAIN_ROIS_PER_IMAGE, (y1,x1,y2,x2) in normalized coordinates]
+    - target_class_ids: [batch, TRAIN_ROIS_PER_IMAGE] Integers representing class IDs.
+    - target_deltas: [batch, TRAIN_ROIS_PER_IMAGE, (dy, dx, log(dh), log(dw)]
+    - target_masks: [batch, TRAIN_ROIS_PER_IMAGE, height, width]
+                 Masks cropped to bbox boundaries and resized to neural
+                 network output size.
+
+    If there are not enough proposals (eg. the proposals array is heavily zero-padded,
+    the target ROIs can also be zero padded)
+    """
+    def __init__(self, trainable, name, dtype, dynamic, **kwargs):
+        super(DetectionTargetLayer, self).__init__(**kwargs)
+
+    def detection_targets_graph(self, proposals, gt_class_ids, gt_boxes, gt_masks):
+        """
+        See documentation for the layer for the explanation of the inputs to this graph.
+        Consider that each tensor here is not batched, so, for instance, the shape of
+        proposals is [N, 4].
+        """
+        # Make some assertion checks for the rest of the layer to work properly
+        asserts = [
+            tf.Assert(tf.greater(tf.shape(proposals[1]), 0),
+            [proposals], name='roi_assertion') # Prints out the proposals tensor if condition is false
+        ]
+        with tf.control_dependencies(asserts):
+            proposals = tf.identity(proposals) # Copy the tensor in another tensor
+        
+        # Remove zero paddings from proposals and gt_boxes
+        proposals, _ = trim_zeros_graph(proposals, name='trim_proposals')
+        gt_boxes, non_zeros = trim_zeros_graph(gt_boxes, name='trim_gt_boxes')
+        # Use the mask of gt_boxes to select GT class IDs and masks
+        gt_class_ids = tf.boolean_mask(gt_class_ids, non_zeros,
+                                        name='trim_gt_class_ids')
+        gt_masks = tf.gather(gt_masks, tf.where(non_zeros)[:,0], 
+                                axis=2, name="trim_gt_masks")
+
+        # Handle COCO crowds
+        # A crowd box in COCO is a bounding box around several instances.
+        # We exclude them from training. To recognize them, we check
+        # for negative class IDs, since that's what is assigned to crowds.
+        # TODO: is this actually good given our dataset?
+        crowd_ix = tf.where(gt_class_ids < 0)[:,0]
+        non_crowd_ix = tf.where(gt_class_ids > 0)[:, 0]
+        crowd_boxes = tf.gather(gt_boxes, crowd_ix)
+        gt_class_ids = tf.gather(gt_class_ids, non_crowd_ix)
+        gt_boxes = tf.gather(gt_boxes, non_crowd_ix)
+        gt_masks = tf.gather(gt_masks, non_crowd_ix, axis=2)
+
+        # Now we need to compute overlaps, that is, understand where and in what
+        # measure do our proposals match groundtruth boxes. To do this we use the
+        # IoU measure (intersection over union or Jaccard index).
+        overlaps = calculate_overlaps_matrix_graph(proposals, gt_boxes)
+        # overlaps will be a NxN matrix of IoUs.
+
+        # TODO: go on from here. Get into the loss function of the RPN.
+
+
+    def call(self, inputs):
+        # We need to slice the batch and run a graph for each slice, because
+        # the number of non-zero padded elements in tensors can be different
+        # within the batch.
+        out_names = ["rois", "target_class_ids", "target_bbox", "target_mask"]
+        outputs = []
+        for i in range(BATCH_SIZE):
+            inputs_slice = [x[i] for x in inputs]
+            output_slice = detection_targets_graph(*inputs_slice)
+            outputs.append(output_slice)
+        # Them, change from a list of slices containing outputs to
+        # a list of outputs containing slices.
+        # In other words, group together outputs by their significance rather than
+        # their position in the batch
+        outputs = list(zip(*outputs))
+        # Stack in a single tensor this list of lists, giving the desired name
+        # to each tensor.
+        result = [tf.stack(o, axis=0, name=n)
+                    for o, n in zip(outputs, out_names)]
+        return result
+
+    def compute_output_shape(self, input_shape):
+        return [
+            (None, TRAIN_ROIS_PER_IMAGE, 4), # ROIs
+            (None, TRAIN_ROIS_PER_IMAGE),    # class IDs
+            (None, TRAIN_ROIS_PER_IMAGE, 4), # deltas
+            (None, TRAIN_ROIS_PER_IMAGE, MASK_SHAPE[0], MASK_SHAPE[1]) # masks
+        ]
+
+    def compute_mask(self, inputs, mask=None):
+        return [None, None, None, None]
+
+
 
 ###########################
 # NMS and Bbox refinement #
 ###########################
 
 def apply_box_deltas_batched(boxes, deltas):
-    '''
+    """
     Applies the given tensor of deltas to the given tensor of boxes
 
     Inputs:
@@ -251,27 +374,28 @@ def apply_box_deltas_batched(boxes, deltas):
 
     Returns:
     - result: [B, N, (ny1,nx1,ny2,nx2)] the refined boxes
-    '''
+    """
     # Get all important values from the tensors
     heights = boxes[:, :, 2] - boxes[:, :, 0]
-    widths  = boxes[:, :, 3] - boxes[:, :, 1]
-    center_y = boxes[:, :, 0] + heights*0.5
-    center_x = boxes[:, :, 1] + widths *0.5
+    widths = boxes[:, :, 3] - boxes[:, :, 1]
+    center_y = boxes[:, :, 0] + heights * 0.5
+    center_x = boxes[:, :, 1] + widths * 0.5
     # Apply deltas 
     center_y = center_y + deltas[:, :, 0] * heights
     center_x = center_x + deltas[:, :, 1] * widths
-    heights  = heights * tf.exp(deltas[:, :, 2])
-    widths   = widths  * tf.exp(deltas[:, :, 3])
+    heights = heights * tf.exp(deltas[:, :, 2])
+    widths = widths * tf.exp(deltas[:, :, 3])
     # Convert back into y1,x1,y2,x2 coordinates
-    y1 = center_y - heights*0.5
+    y1 = center_y - heights * 0.5
     y2 = y1 + heights
-    x1 = center_x - widths*0.5
+    x1 = center_x - widths * 0.5
     x2 = x1 + widths
     # Stack the measures in a new tensor
-    return tf.stack([y1,x1,y2,x2], axis=2, # Axis = 2 ensures that we stack on the inner
-                                           # dimension, so that we obtain a batch with
-                                           # the desired number of 4-elements tensors.
+    return tf.stack([y1, x1, y2, x2], axis=2,  # Axis = 2 ensures that we stack on the inner
+                    # dimension, so that we obtain a batch with
+                    # the desired number of 4-elements tensors.
                     name='apply_box_deltas')
+
 
 def clip_boxes_batched(boxes, window):
     """
@@ -283,10 +407,10 @@ def clip_boxes_batched(boxes, window):
     """
     # Split the tensors for ease of use
     wy1, wx1, wy2, wx2 = tf.split(window, 4)
-    y1 = boxes[:,:,0]
-    x1 = boxes[:,:,1]
-    y2 = boxes[:,:,2]
-    x2 = boxes[:,:,3]
+    y1 = boxes[:, :, 0]
+    x1 = boxes[:, :, 1]
+    y2 = boxes[:, :, 2]
+    x2 = boxes[:, :, 3]
     # Clip
     # To ensure that any coordinate is in the defined range, we must:
     # - Select the minimum between the coordinate and the maximum boundary
@@ -298,11 +422,12 @@ def clip_boxes_batched(boxes, window):
     y2 = tf.maximum(tf.minimum(y2, wy2), wy1)
     x1 = tf.maximum(tf.minimum(x1, wx2), wx1)
     x2 = tf.maximum(tf.minimum(x2, wx2), wx1)
-    clipped = tf.stack([y1,x1,y2,x2], axis=2, name="clipped_boxes")
+    clipped = tf.stack([y1, x1, y2, x2], axis=2, name="clipped_boxes")
     return clipped
 
+
 class RefinementLayer(KL.Layer):
-    '''
+    """
     Receives anchor scores and selects a subset to pass as proposals
     to the second part of the architecture.
     - Applies bounding box refinement deltas to anchors
@@ -312,24 +437,25 @@ class RefinementLayer(KL.Layer):
     - A tensor containing 3 different tensors:
         - rpn_probs : [batch, num_anchors, (bg prob, fg prob)]
         - rpn_deltas: [batch, num_anchors, (dy, dx, log(dh), log(dw))]
-        - anchors: [batch, num_anchors, (y1, x1, y2, x2)] anchors in 
+        - anchors: [batch, num_anchors, (y1, x1, y2, x2)] anchors in
         normalized coordinates
 
     Outputs:
     - Refined proposals in normalized coordinates [batch, rois, (y1, x1, y2, x2)]
-    '''
+    """
+
     def __init__(self, proposal_count, nms_threshold, **kwargs):
         super(RefinementLayer, self).__init__(**kwargs)
         self.proposal_count = proposal_count
         self.nms_threshold = nms_threshold
 
-    def call(self, inputs):
-        '''
+    def call(self, inputs, **kwargs):
+        """
         Entry point for the layer call.
-        '''
+        """
         # Box foreground scores
         # Keep batch and num_anchors, ignore background probability
-        scores = inputs[0][:, :, 1] 
+        scores = inputs[0][:, :, 1]
         # Box deltas to be applied to the anchors
         deltas = inputs[1]
         # https://github.com/matterport/Mask_RCNN/issues/270#issuecomment-367602954
@@ -361,7 +487,7 @@ class RefinementLayer(KL.Layer):
         pre_nms_limit = tf.minimum(PRE_NMS_LIMIT, tf.shape(anchors)[1])
         # This function returns both values and indices, but we only need the indices
         top_indexes = tf.math.top_k(scores, k=pre_nms_limit, sorted=True,
-                                name='top_anchors_by_score').indices
+                                    name='top_anchors_by_score').indices
 
         # Reduce also scores and deltas tensors
         # TODO: I changed this part a lot, check that tensors shapes are the same of the other code
@@ -381,18 +507,19 @@ class RefinementLayer(KL.Layer):
         # We need to do apply the deltas for every item in the batch.
         boxes = apply_box_deltas_batched(pre_nms_anchors, deltas)
         # Clip to image boundaries (in normalized coordinates, clip in 0..1 range)
-        window = np.array([0,0,1,1], dtype=np.float32)
+        window = np.array([0, 0, 1, 1], dtype=np.float32)
         boxes = clip_boxes_batched(boxes, window)
         # Apply non maximum suppression using tensorflow's implementation of a batched NMS
         nmsed_boxes, nmsed_scores, _, _ = tf.image.combined_non_max_suppression(
-                                                tf.expand_dims(boxes, 2),
-                                                tf.expand_dims(scores,2),
-                                                self.proposal_count, self.proposal_count,
-                                                self.nms_threshold)
+            tf.expand_dims(boxes, 2),
+            tf.expand_dims(scores, 2),
+            self.proposal_count, self.proposal_count,
+            self.nms_threshold)
         return nmsed_boxes, nmsed_scores
 
     def compute_output_shape(self, input_shape):
         return (None, self.proposal_count, 4)
+
 
 ##########################
 # COMPOSITION OF MODULES #
@@ -401,24 +528,25 @@ class RefinementLayer(KL.Layer):
 class BadImageSizeException(Exception):
     pass
 
+
 def build(mode):
     """
     Builds the Backbone + RPN model.
     """
     h, w = IMAGE_SHAPE[:2]
-    if h / 2**6 != int(h / 2**6) or w / 2**6 != int(w / 2**6):
+    if h / 2 ** 6 != int(h / 2 ** 6) or w / 2 ** 6 != int(w / 2 ** 6):
         raise BadImageSizeException("Image size must be dividable by 2 at least 6 times "
                                     "to avoid fractions when downscaling and upscaling."
                                     "For example, use 256, 320, 384, 448, 512, ... etc. ")
-            
+
     # Define inputs
     # a. The input image
     input_image = KL.Input(
-        shape = IMAGE_SHAPE, name='input_image'
+        shape=IMAGE_SHAPE, name='input_image'
     )
     # b. The anchors in NORMALIZED coordinates
     input_anchors = KL.Input(
-        shape = [None, 4], name='input_anchors'
+        shape=[None, 4], name='input_anchors'
     )
 
     # If we are training the network, we need the groundtruth rpn matches (1 or 0) 
@@ -427,26 +555,26 @@ def build(mode):
     if mode == 'training':
         # RPN
         input_rpn_match = KL.Input(
-            shape = [None, 1], name='input_rpn_match', dtype = tf.int32
+            shape=[None, 1], name='input_rpn_match', dtype=tf.int32
             # TODO: can we use int8 or a boolean for optimization?
         )
         input_rpn_bbox = KL.Input(
-            shape = [None, 4], name = 'input_rpn_bbox', dtype = tf.float32
+            shape=[None, 4], name='input_rpn_bbox', dtype=tf.float32
         )
 
         # Detections
         input_gt_class_ids = KL.Input(
-            shape = [None], name = 'input_gt_class_ids', dtype = tf.int32
+            shape=[None], name='input_gt_class_ids', dtype=tf.int32
         )
         # Zero-padded GT boxes in pixels
         # [batch, MAX_GT_INSTANCES, (y1,x1,y2,x2)] (in pixels)
         input_gt_boxes = KL.Input(
-            shape = [None], name = 'input_gt_boxes', dtype = tf.int32
+            shape=[None], name='input_gt_boxes', dtype=tf.int32
         )
         # Normalize input coordinates
         gt_boxes = KL.Lambda(lambda x: norm_boxes_tf(
-            x, K.shape(input_image)[1:3]) # Ignore batch and other measures
-        )(input_gt_boxes)
+            x, K.shape(input_image)[1:3])  # Ignore batch and other measures
+                             )(input_gt_boxes)
 
         # Groundtruth masks in zero-padded pixels
         # [batch, height, width, MAX_GT_INSTANCES]
@@ -471,32 +599,32 @@ def build(mode):
     # C3 = batchx128x128x512
     # C4 = batchx64x64x1024
     # C5 = batchx32x32x2048
-    C1,C2,C3,C4,C5 = resnet_graph(input_image)
+    C1, C2, C3, C4, C5 = resnet_graph(input_image)
 
     ### TOP-DOWN FPN ###
-    P5 = KL.Conv2D(TOP_DOWN_PYRAMID_SIZE, (1,1), name='fpn_c5p5')(C5)
+    P5 = KL.Conv2D(TOP_DOWN_PYRAMID_SIZE, (1, 1), name='fpn_c5p5')(C5)
     # P5 has shape 32x32x256
     P4 = KL.Add(name='fpn_p4add')([
         # UpSampling2D repeats rows and columns of the data (P5) 2 times.
         # Thus, this is 64x64x256
-        KL.UpSampling2D(size=(2,2), name="fpn_p5upsampled")(P5),
+        KL.UpSampling2D(size=(2, 2), name="fpn_p5upsampled")(P5),
         # C4 is transformed into 64x64x256
-        KL.Conv2D(TOP_DOWN_PYRAMID_SIZE, (1,1), name='fpn_c4p4')(C4)
+        KL.Conv2D(TOP_DOWN_PYRAMID_SIZE, (1, 1), name='fpn_c4p4')(C4)
         # Hence the shapes match and we can perform an addition
     ])
     # P4 has shape 64x64x256
     P3 = KL.Add(name='fpn_p3add')([
         # 128x128x256
-        KL.UpSampling2D(size=(2,2), name="fpn_p4upsampled")(P4),
+        KL.UpSampling2D(size=(2, 2), name="fpn_p4upsampled")(P4),
         # 128x128x256
-        KL.Conv2D(TOP_DOWN_PYRAMID_SIZE, (1,1), name="fpn_c3p3")(C3)
+        KL.Conv2D(TOP_DOWN_PYRAMID_SIZE, (1, 1), name="fpn_c3p3")(C3)
     ])
     # P3 has shape 128x128x256
     P2 = KL.Add(name='fpn_p2add')([
         # 256x256x256
-        KL.UpSampling2D(size=(2,2), name="fpn_p3upsampled")(P3),
+        KL.UpSampling2D(size=(2, 2), name="fpn_p3upsampled")(P3),
         # 256x256x256
-        KL.Conv2D(TOP_DOWN_PYRAMID_SIZE, (1,1), name="fpn_c2p2")(C2)
+        KL.Conv2D(TOP_DOWN_PYRAMID_SIZE, (1, 1), name="fpn_c2p2")(C2)
     ])
     # P2 has shape 256x256x256
     # Attach 3x3 conv to all P layers to get the final feature maps.
@@ -507,16 +635,15 @@ def build(mode):
     P5 = KL.Conv2D(TOP_DOWN_PYRAMID_SIZE, (3, 3), padding="same", name="fpn_p5")(P5)
     # An additional feature map is generated by subsampling from P5
     # with stride 2
-    P6 = KL.MaxPooling2D(pool_size=(1,1), strides=2, name='fpn_p6')(P5)
+    P6 = KL.MaxPooling2D(pool_size=(1, 1), strides=2, name='fpn_p6')(P5)
     # P6 has shape 16x16x256
-    
+
     # List of feature maps for the rpn
     rpn_feature_maps = [P2, P3, P4, P5, P6]
     # List of feature maps for the rest of the network
-    mrcnn_feature_maps = [P2,P3,P4,P5]
+    mrcnn_feature_maps = [P2, P3, P4, P5]
     # The Rest of the network does not use P6
 
-    # TODO: ADD TRAINING CODE REGARDING ANCHORS ETC.
     if mode == 'training':
         # Anchors are not passed as input in training mode
         anchors = get_anchors(IMAGE_SHAPE)
@@ -541,8 +668,8 @@ def build(mode):
     # The regions that the RPN scans over are called anchors. 
     # Which are boxes distributed over the image area
     rpn_model = build_rpn_model(anchor_stride=RPN_ANCHOR_STRIDE,
-                        anchors_per_location=len(RPN_ANCHOR_RATIOS), 
-                        depth=TOP_DOWN_PYRAMID_SIZE)
+                                anchors_per_location=len(RPN_ANCHOR_RATIOS),
+                                depth=TOP_DOWN_PYRAMID_SIZE)
 
     # We apply the RPN on all layers of the pyramid:
     layers_outputs = []
@@ -561,15 +688,15 @@ def build(mode):
     # Then, we concatenate all elements of the list as rows of three long tensors,
     # containing all logits, all class probabilities and all bounding boxes.
     outputs = [KL.Concatenate(axis=1, name=n)(list(o))
-                for o,n in zip(outputs, output_names)]
+               for o, n in zip(outputs, output_names)]
 
     # Finally, extract all tensors 
     rpn_class_logits, rpn_classes, rpn_deltas = outputs
 
     # The output of the RPN must be transformed in actual proposals for the rest of
     # the network.
-    proposal_count = POST_NMS_ROIS_INFERENCE if mode == 'evaluation'\
-                else POST_NMS_ROIS_TRAINING
+    proposal_count = POST_NMS_ROIS_INFERENCE if mode == 'evaluation' \
+        else POST_NMS_ROIS_TRAINING
 
     # Call the RefinementLayer to do NMS of anchors and apply box deltas
     rpn_rois, rpn_classes = RefinementLayer(
@@ -577,19 +704,39 @@ def build(mode):
         nms_threshold=RPN_NMS_THRESHOLD,
         name='ROI_refinement')([rpn_classes, rpn_deltas, anchors])
 
+    if mode == 'training':
+        # We need to specify which are the class IDs the dataset supports
+        # We haven't explored the dataset correctly yet, so we'll skip this
+        # part for now
+
+        # TODO
+        #active_class_ids = KL.Lambda(
+        #    lambda x: parse_image_meta_graph(x)["active_class_idx"]
+        #)(input_image_meta)
+
+        # Generate some target proposals among the set of ROIs we have generated
+        # earlier in the network. These target proposals represent the target output
+        # of the RPN for the image.
+        rois, target_class_ids, target_bbox, target_mask = \
+            DetectionTargetLayer(name="proposal_targets")([
+                rpn_rois, input_gt_class_ids, gt_boxes, input_gt_masks
+            ])
+
+
     # Finally instantiate the Keras model and return it
     model = KM.Model(inputs=[input_image, input_anchors],
                      outputs=[rpn_classes, rpn_rois],
                      name='rpn')
-    
+
     return model
+
 
 ###############################
 ### PREPROCESSING UTILITIES ###
 ###############################
 
 def resize_image(image, min_dim, max_dim):
-    '''
+    """
     Resizes an image by keeping the aspect ratio unchanged and using zero-padding
     to reshape it to a square.
 
@@ -605,13 +752,13 @@ def resize_image(image, min_dim, max_dim):
             "acceptable" column is y2-1
         - scale: the scale factor used to resize the image
         - padding: type of padding added to the image [(top, bottom), (left, right), (0, 0)]
-    '''
+    """
     # Keep track of the image dtype to return the same dtype
     image_dtype = image.dtype
     h, w = image.shape[:2]
     image_max = max(h, w)
     # Scale up, not down
-    scale = max(1, min_dim/min(h,w))
+    scale = max(1, min_dim / min(h, w))
     # Check if enlarging the max dim by scale would exceed our limit
     if round(image_max * scale) > max_dim:
         # If that's the case, bound the scale to the ratio between max dim and the image max
@@ -619,9 +766,9 @@ def resize_image(image, min_dim, max_dim):
     # Resize image using bilinear interpolation
     if scale != 1:
         image = resize(image, output_shape=(round(h * scale), round(w * scale)),
-                        order=1, mode='constant', cval=0, clip=True,
-                        anti_aliasing=False, anti_aliasing_sigma=False,
-                        preserve_range=True)
+                       order=1, mode='constant', cval=0, clip=True,
+                       anti_aliasing=False, anti_aliasing_sigma=False,
+                       preserve_range=True)
     # Get new height and width:
     h, w = image.shape[:2]
     top_pad = (max_dim - h) // 2
@@ -629,12 +776,13 @@ def resize_image(image, min_dim, max_dim):
     left_pad = (max_dim - w) // 2
     right_pad = max_dim - w - left_pad
     padding = [(top_pad, bottom_pad),
-                (left_pad, right_pad),
-                (0,0)]
+               (left_pad, right_pad),
+               (0, 0)]
     # Apply padding to the image
     image = np.pad(image, padding, mode='constant', constant_values=0)
     window = (top_pad, left_pad, h + top_pad, w + left_pad)
     return image.astype(image_dtype), window, scale, padding
+
 
 #####################
 ### PREPROCESSING ###
@@ -667,10 +815,81 @@ def preprocess_inputs(images):
     preprocessed_inputs = np.stack(preprocessed_inputs)
     windows = np.stack(windows)
     return preprocessed_inputs, windows
-    
+
+
 ######################
 ### MISC UTILITIES ###
 ######################
+
+def trim_zeros_graph(boxes, name='trim_zeros'):
+    """
+    Often boxes are represented as tensors of shape [N, 4] and are padded
+    with zeros. This graph function removes zero boxes.
+
+    Inputs:
+    - boxes: [N, 4]: matrix of boxes.
+    
+    Outputs:
+    - boxes: [M, 4]: the matrix of boxes cleaned by its zero padded elements
+    - non_zeros: [N]: a 1D boolean mask identifying the rows to keep.
+    """
+    # To create a mask for non-zero elements we can convert non-zero elements
+    # to booleans. We know that a 0 is translated to a False, while a non-zero 
+    # to True. If the sum of the 4 coordinates of the box is 0, it means that
+    # the box is zero-padded, so we can cast it to False.
+    non_zeros = tf.cast(tf.reduce_sum(tf.abs(boxes), axis=1), tf.bool)
+    boxes = tf.boolean_mask(boxes, non_zeros, name=name)
+    return boxes, non_zeros
+
+def calculate_overlaps_matrix_graph(boxes1, boxes2):
+    """
+    A tensorflow graph function that computes the intersection over union
+    metric between two sets of boxes. 
+
+    Inputs:
+    - boxes1, boxes2: [N, (y1,x1,y2,x2)]
+
+    Outputs:
+    - overlaps: [N,N] matrix containing the IoU metric for each pair of boxes
+    """
+    # 1. Repeat boxes1 for each element of boxes2. This way we don't need to use
+    # loops but we can compare each box of boxes1 with the boxes of boxes2 in parallel!
+    b1 = tf.repeat(boxes1, [tf.shape(boxes2)[0]], axis=0) # b1 becomes [N*N, 4]
+    # Each row of boxes1 is repeated N times.
+
+    # b2 instead is repeated with the function tile. Similarly to stack, it considers
+    # the tensor as a whole block and stacks it on itself N times.
+    b2 = tf.tile(boxes2, [tf.shape(boxes1)[0], 1])
+
+    # The difference is that the first tensor has elements in this way:
+    # 111222333
+    # While the second tensor has elements like this:
+    # 123123123
+    # So we can combine them similarly to a loop without doing loops!
+
+    # 2. Compute intersections
+    # Get the coordinates from the tensors. Remember that each of these subtensors
+    # will be a Nx1 tensor containing coordinates.
+    b1_y1, b1_x1, b1_y2, b1_x2 = tf.split(b1, 4, axis=1)
+    b2_y1, b2_x1, b2_y2, b2_x2 = tf.split(b2, 4, axis=1)
+    # Calculate the points of the intersection
+    y1 = tf.maximum(b1_y1, b2_y1)
+    x1 = tf.maximum(b1_x1, b2_x1)
+    y2 = tf.minimum(b1_y2, b2_y2)
+    x2 = tf.minimum(b1_x2, b2_x2)
+    # Calculate the area intersection. Notice that x2-x1 and y2-y1 can be negative
+    # if there is no intersection.
+    intersection = tf.maximum(x2 - x1, 0) * tf.maximum(y2 - y1, 0)
+    # 3. Compute unions
+    b1_area = (b1_y2 - b1_y1) * (b1_x2 - b1_x1)
+    b2_area = (b2_y2 - b2_y1) * (b2_x2 - b2_x1)
+    union = b1_area + b2_area - intersection
+    # 4. Compute IoU
+    iou = intersection / union
+    # 5. Reshape as a NxN matrix.
+    overlaps = tf.reshape(iou, [tf.shape(boxes1)[0], tf.shape(boxes2)[0]])
+    return overlaps
+
 
 def generate_anchors(scales, ratios, shape, feature_stride, anchor_stride):
     """
@@ -708,7 +927,7 @@ def generate_anchors(scales, ratios, shape, feature_stride, anchor_stride):
     #   sqrt(width) term rather than the sqrt(height) which is our 
     #   "target"
     heights = scales / np.sqrt(ratios)
-    widths  = scales * np.sqrt(ratios)
+    widths = scales * np.sqrt(ratios)
 
     # What are the positions in the feature space?
     # We use arange to create evenly spaced sequences from 0 for all the
@@ -730,16 +949,17 @@ def generate_anchors(scales, ratios, shape, feature_stride, anchor_stride):
     box_centers = np.stack(
         # Stack them together in a new axis ([anchors, 3, 2])
         [box_centers_y, box_centers_x], axis=2
-    ).reshape([-1, 2]) # Unstack anchors creating a [total_ancors, 2] array
+    ).reshape([-1, 2])  # Unstack anchors creating a [total_ancors, 2] array
     box_sizes = np.stack(
         [box_heights, box_widths], axis=2
     ).reshape([-1, 2])
 
     # Finally, convert the arrays into a single big array with (y1, x1, y2, x2) coordinates
-    boxes = np.concatenate([box_centers - 0.5 * box_sizes, # y1, x1
-                            box_centers + 0.5 * box_sizes], axis=1) # y2, x2
+    boxes = np.concatenate([box_centers - 0.5 * box_sizes,  # y1, x1
+                            box_centers + 0.5 * box_sizes], axis=1)  # y2, x2
     # Concatenate on the columns obtaining x1,y1,x2,y2
     return boxes
+
 
 def norm_boxes(boxes, shape):
     """Converts boxes from pixel coordinates to normalized coordinates.
@@ -766,14 +986,16 @@ def norm_boxes(boxes, shape):
     ])
     return ((boxes - shift) / scale).astype(np.float32)
 
+
 def norm_boxes_tf(boxes, shape):
     '''Same as the function above, but using tensorflow to deal with tensors
     '''
     shape = tf.cast(shape, tf.float32)  # Cast the shapes of the image to float32
-    h, w = tf.split(shape, 2)           # Split in two sub-tensors
-    scale = tf.concat([h,w,h,w], axis=-1) - tf.constant(1.0) # Concatenate h and w and reduce them all by 1
-    shift = tf.constant([0.,0.,1.,1.])
-    return tf.divide(boxes-shift, scale) 
+    h, w = tf.split(shape, 2)  # Split in two sub-tensors
+    scale = tf.concat([h, w, h, w], axis=-1) - tf.constant(1.0)  # Concatenate h and w and reduce them all by 1
+    shift = tf.constant([0., 0., 1., 1.])
+    return tf.divide(boxes - shift, scale)
+
 
 # Just the inverse function
 def denorm_boxes(boxes, shape):
@@ -792,15 +1014,17 @@ def denorm_boxes(boxes, shape):
     shift = np.array([0, 0, 1, 1])
     return np.around((boxes * scale) + shift).astype(np.int32)
 
+
 def denorm_boxes_tf(boxes, shape):
     '''
     Same as the function above, but using tensorflow operation to deal with tensors
     '''
     shape = tf.cast(shape, tf.float32)  # Cast the shapes of the image to float32
-    h, w = tf.split(shape, 2)           # Split in two sub-tensors
-    scale = tf.concat([h,w,h,w], axis=-1) - tf.constant(1.0)    # Concatenate h and w and reduce them all by 1
-    shift = tf.constant([0.,0.,1.,1.])
-    return tf.cast(tf.round(tf.multiply(boxes, scale) + shift), tf.int32) # Cast back into pixels
+    h, w = tf.split(shape, 2)  # Split in two sub-tensors
+    scale = tf.concat([h, w, h, w], axis=-1) - tf.constant(1.0)  # Concatenate h and w and reduce them all by 1
+    shift = tf.constant([0., 0., 1., 1.])
+    return tf.cast(tf.round(tf.multiply(boxes, scale) + shift), tf.int32)  # Cast back into pixels
+
 
 def get_anchors(image_shape):
     """
@@ -817,7 +1041,7 @@ def get_anchors(image_shape):
     backbone_shapes = np.array([
         [int(math.ceil(image_shape[0] / stride)),
          int(math.ceil(image_shape[1] / stride))]
-         for stride in BACKBONE_STRIDES]
+        for stride in BACKBONE_STRIDES]
     )
     if not tuple(image_shape) in ANCHOR_CACHE:
         # If we have not calculated the anchor coordinates for an image with the same shape,
@@ -827,12 +1051,12 @@ def get_anchors(image_shape):
         # Each scale is bound to a different level of the pyramid
         # On the other hand, all ratios of the proposals are used in all levels.
         for i in range(len(RPN_ANCHOR_SCALES)):
-            anchors.append(generate_anchors(RPN_ANCHOR_SCALES[i],   # Use only the appropriate scale for the level
-                                            RPN_ANCHOR_RATIOS,      # But use all ratios for the BBs
-                                            backbone_shapes[i],     # At this level, the image has this shape...
-                                            BACKBONE_STRIDES[i],    # Or better, is scaled of this quantity
-                                            RPN_ANCHOR_STRIDE       # Frequency of sampling in the feature map 
-                                                                    # for the generation of anchors
+            anchors.append(generate_anchors(RPN_ANCHOR_SCALES[i],  # Use only the appropriate scale for the level
+                                            RPN_ANCHOR_RATIOS,  # But use all ratios for the BBs
+                                            backbone_shapes[i],  # At this level, the image has this shape...
+                                            BACKBONE_STRIDES[i],  # Or better, is scaled of this quantity
+                                            RPN_ANCHOR_STRIDE  # Frequency of sampling in the feature map
+                                            # for the generation of anchors
                                             ))
         # Transform the list in an array [N, (y1,x1,y2,x2)] which contains all generated anchors
         # The sorting of the scale is bound to the scaling of the feature maps,
@@ -842,6 +1066,7 @@ def get_anchors(image_shape):
         anchors = norm_boxes(anchors, image_shape[:2])
         ANCHOR_CACHE[tuple(image_shape)] = anchors
     return ANCHOR_CACHE[tuple(image_shape)]
+
 
 ##########################
 ### DETECTION PIPELINE ###
@@ -870,7 +1095,7 @@ def detect(images, model: KM.Model):
     for g in preprocessed_images[1:]:
         assert g.shape == image_shape, \
             "All images must have the same size after preprocessing"
-    
+
     # The network also receives anchors as inputs, so we need a function
     # that returns the anchors
     anchors = get_anchors(image_shape)
@@ -885,6 +1110,7 @@ def detect(images, model: KM.Model):
     # Return the preprocessed images, anchors, classifications and bounding boxes from the RPN
     return preprocessed_images, rpn_classes, rpn_bboxes
 
+
 ###########################
 ### MAIN (TESTING CODE) ###
 ###########################
@@ -897,13 +1123,13 @@ if __name__ == "__main__":
     # We need to compile the model before using it
 
     # Test the detection with one image (stack it n times to simulate a batch)
-    img = np.stack([mpimg.imread('res/elephant.jpg')]*BATCH_SIZE)
+    img = np.stack([mpimg.imread('res/elephant.jpg')] * BATCH_SIZE)
     mod_images, rpn_classes, rpn_bboxes = detect(img, model)
 
     print("Shape of rpn_classes: {}".format(tf.shape(rpn_classes)))
     print("Shape of rpn_bboxes: {}".format(tf.shape(rpn_bboxes)))
 
-    BBOXES_TO_DRAW = 200
+    BBOXES_TO_DRAW = 100
 
     # Show each image sequentially and draw a selection of "the best" RPN bounding boxes.
     # Note that the model is not trained yet so "the best" boxes are really just random.
@@ -914,7 +1140,7 @@ if __name__ == "__main__":
         # Select positive bboxes
         condition = np.where(classes > 0.5)[0]
         # If there is at least a positive bbox, draw it, otherwise draw random ones
-        if len(condition): 
+        if len(condition):
             print("Foreground Bounding Boxes have been found.")
             bboxes = bboxes[condition]
         # Sort by probability
@@ -927,7 +1153,7 @@ if __name__ == "__main__":
         ax.imshow(image)
         for bb in rnd_bboxes:
             rect = Rectangle(
-                (bb[0], bb[1]), bb[2]-bb[0], bb[3]-bb[1],
+                (bb[0], bb[1]), bb[2] - bb[0], bb[3] - bb[1],
                 linewidth=1, edgecolor='r', facecolor='none'
             )
             ax.add_patch(rect)
