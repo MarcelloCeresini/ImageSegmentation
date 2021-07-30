@@ -92,8 +92,15 @@ TRAIN_ROIS_PER_IMAGE = 256
 MAX_GT_INSTANCES = 100
 
 # Output mask shape
-# TODO: What is this exactly?
-MASK_SHAPE = [28, 28]
+# The generated masks are low resolution: 28x28 pixels. 
+# But they are soft masks, represented by float numbers, so they hold more 
+# details than binary masks. The small mask size helps keep the mask 
+# branch light. During training, we scale down the ground-truth masks to 
+# 28x28 to compute the loss, and during inferencing we scale up the predicted 
+# masks to the size of the ROI bounding box and that gives us the final masks, 
+# one per object.
+MASK_SHAPE = [28, 28] # If we change this, we also need to make adjustments
+                      # to the mask branch.
 
 # Anchor cache: when dealing with images of the same shape, we don't want
 # to calculate anchor coordinates over and over again, thus we mantain
