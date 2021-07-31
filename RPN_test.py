@@ -1035,6 +1035,17 @@ def denorm_boxes_tf(boxes, shape):
     shift = tf.constant([0., 0., 1., 1.])
     return tf.cast(tf.round(tf.multiply(boxes, scale) + shift), tf.int32)  # Cast back into pixels
 
+def denormalize_image(image):
+    '''
+    Takes an image (numpy matrix) in the format expected by the neural network
+    (normalized) and transform them back into classical pixel images.
+
+    images: a list of image matrices with different sizes. What is constant
+        is the third dimension of the image matrix, the depth (usually 3)
+    
+    Returns an image (numpy matrix) containing the restored image images ([h, w, 3]).
+    '''
+    return np.asarray(image + MEAN_PIXEL, dtype=np.int16)
 
 def get_anchors(image_shape):
     """
@@ -1160,7 +1171,7 @@ if __name__ == "__main__":
         rnd_bboxes = denorm_boxes(rnd_bboxes, image.shape[:2])
         fig, ax = plt.subplots()
         # Note that the image was previously normalized so colors will be weird
-        ax.imshow(image)
+        ax.imshow(denormalize_image(image))
         for bb in rnd_bboxes:
             rect = Rectangle(
                 (bb[0], bb[1]), bb[2] - bb[0], bb[3] - bb[1],
