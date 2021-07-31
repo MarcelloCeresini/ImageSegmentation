@@ -13,3 +13,4 @@ env
 ## IDE STUFF ##
 .vscode
 .metals
+.idea
