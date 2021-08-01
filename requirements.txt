@@ -2,3 +2,4 @@ tensorflow
 tensorflow_datasets
 matplotlib
 scikit-image>=0.14
+ipykernel
