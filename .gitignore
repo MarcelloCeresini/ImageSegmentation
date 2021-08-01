@@ -14,3 +14,6 @@ env
 .vscode
 .metals
 .idea
+
+## TESTING AREAS ##
+testing

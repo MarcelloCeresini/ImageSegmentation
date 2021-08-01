@@ -88,6 +88,10 @@ RPN_NMS_THRESHOLD = 0.7
 # more proposals are generated.
 TRAIN_ROIS_PER_IMAGE = 256
 
+# Percent of positive ROIs used during training to avoid that too many 
+# proposals are used in the loss function.
+ROI_POSITIVE_RATIO = 0.33
+
 # Maximum number of ground truth instances to use in one image
 MAX_GT_INSTANCES = 100
 
@@ -262,11 +266,13 @@ def build_rpn_model(anchor_stride, anchors_per_location, depth):
 #######################
 class DetectionTargetLayer(KL.Layer):
     """
-    Subsamples RPN's proposals and generates box refinements, class_ids and masks
-    for each chosen target. The target will be used for training the RPN.
+    Takes a subset of RPN's proposals so that negative proposals don't overshadow 
+    positive ones. Then, associates each proposals to either the background or a
+    target GT bounding box. Then, it prepares each of these selected proposals by
+    generating box refinements (distance from the GT box), class_ids and object masks
+    (by taking them from the appropriate GT object). Proposals enriched with this information
+    will be used as training samples.
 
-    TODO: how is a target ROI chosen?
-    
     Inputs:
     - proposals: [batch, N, (y1,x1,y2,x2)] in normalized coordinates.
         If there are not enough proposals, it might be a zero-padded array.
@@ -289,50 +295,6 @@ class DetectionTargetLayer(KL.Layer):
     def __init__(self, trainable, name, dtype, dynamic, **kwargs):
         super(DetectionTargetLayer, self).__init__(**kwargs)
 
-    def detection_targets_graph(self, proposals, gt_class_ids, gt_boxes, gt_masks):
-        """
-        See documentation for the layer for the explanation of the inputs to this graph.
-        Consider that each tensor here is not batched, so, for instance, the shape of
-        proposals is [N, 4].
-        """
-        # Make some assertion checks for the rest of the layer to work properly
-        asserts = [
-            tf.Assert(tf.greater(tf.shape(proposals[1]), 0),
-            [proposals], name='roi_assertion') # Prints out the proposals tensor if condition is false
-        ]
-        with tf.control_dependencies(asserts):
-            proposals = tf.identity(proposals) # Copy the tensor in another tensor
-        
-        # Remove zero paddings from proposals and gt_boxes
-        proposals, _ = trim_zeros_graph(proposals, name='trim_proposals')
-        gt_boxes, non_zeros = trim_zeros_graph(gt_boxes, name='trim_gt_boxes')
-        # Use the mask of gt_boxes to select GT class IDs and masks
-        gt_class_ids = tf.boolean_mask(gt_class_ids, non_zeros,
-                                        name='trim_gt_class_ids')
-        gt_masks = tf.gather(gt_masks, tf.where(non_zeros)[:,0], 
-                                axis=2, name="trim_gt_masks")
-
-        # Handle COCO crowds
-        # A crowd box in COCO is a bounding box around several instances.
-        # We exclude them from training. To recognize them, we check
-        # for negative class IDs, since that's what is assigned to crowds.
-        # TODO: is this actually good given our dataset?
-        crowd_ix = tf.where(gt_class_ids < 0)[:,0]
-        non_crowd_ix = tf.where(gt_class_ids > 0)[:, 0]
-        crowd_boxes = tf.gather(gt_boxes, crowd_ix)
-        gt_class_ids = tf.gather(gt_class_ids, non_crowd_ix)
-        gt_boxes = tf.gather(gt_boxes, non_crowd_ix)
-        gt_masks = tf.gather(gt_masks, non_crowd_ix, axis=2)
-
-        # Now we need to compute overlaps, that is, understand where and in what
-        # measure do our proposals match groundtruth boxes. To do this we use the
-        # IoU measure (intersection over union or Jaccard index).
-        overlaps = calculate_overlaps_matrix_graph(proposals, gt_boxes)
-        # overlaps will be a NxN matrix of IoUs.
-
-        # TODO: go on from here. Get into the loss function of the RPN.
-
-
     def call(self, inputs):
         # We need to slice the batch and run a graph for each slice, because
         # the number of non-zero padded elements in tensors can be different
@@ -354,6 +316,202 @@ class DetectionTargetLayer(KL.Layer):
                     for o, n in zip(outputs, out_names)]
         return result
 
+    def detection_targets_graph(self, proposals, gt_class_ids, gt_boxes, gt_masks):
+        """
+        See documentation for the layer for the explanation of the inputs to this graph.
+        Consider that each tensor here is not batched, so, for instance, the shape of
+        proposals is [N, 4].
+        """
+        # Make some assertion checks for the rest of the layer to work properly
+        asserts = [
+            tf.Assert(tf.greater(tf.shape(proposals[1]), 0),
+            [proposals], name='roi_assertion') # Prints out the proposals tensor if condition is false
+        ]
+        with tf.control_dependencies(asserts):
+            proposals = tf.identity(proposals) # Copy the tensor in another tensor
+
+        ## CLEANING FROM PADDING ##
+        
+        # Remove zero paddings from proposals and gt_boxes
+        proposals, _ = trim_zeros_graph(proposals, name='trim_proposals')
+        gt_boxes, non_zeros = trim_zeros_graph(gt_boxes, name='trim_gt_boxes')
+        # Use the mask of gt_boxes to select GT class IDs and masks
+        gt_class_ids = tf.boolean_mask(gt_class_ids, non_zeros,
+                                        name='trim_gt_class_ids')
+        gt_masks = tf.gather(gt_masks, tf.where(non_zeros)[:,0], 
+                                axis=2, name="trim_gt_masks")
+
+        ## CLEANING FROM CROWDS ##
+
+        # Handle COCO crowds
+        # A crowd box in COCO is a bounding box around several instances.
+        # We exclude them from training. To recognize them, we check
+        # for negative class IDs, since that's what is assigned to crowds.
+        # TODO: is this actually good given our dataset?
+        crowd_ix = tf.where(gt_class_ids < 0)[:,0]
+        non_crowd_ix = tf.where(gt_class_ids > 0)[:, 0]
+        crowd_boxes = tf.gather(gt_boxes, crowd_ix)
+        gt_class_ids = tf.gather(gt_class_ids, non_crowd_ix)
+        gt_boxes = tf.gather(gt_boxes, non_crowd_ix)
+        gt_masks = tf.gather(gt_masks, non_crowd_ix, axis=2)
+
+        ## COMPUTING OVERLAPS AND SELECTING BEST MATCHES BASED ON THEM ##
+
+        # Now we need to compute overlaps, that is, understand where and in what
+        # measure do our proposals match groundtruth boxes. To do this we use the
+        # IoU measure (intersection over union or Jaccard index).
+        overlaps = calculate_overlaps_matrix_graph(proposals, gt_boxes)
+        # overlaps will be a NxN matrix of IoUs.
+        # We also calculate the overlaps with the crowds boxes, obtaining a matrix
+        # that is [proposals, crowd_boxes].
+        crowd_overlaps = calculate_overlaps_matrix_graph(proposals, crowd_boxes)
+        # Get the highest IoU for each row (the best groundtruth box for each proposal)
+        crowd_iou_max = tf.reduce_max(crowd_overlaps, axis=1)
+        # Where the intersection over union with the best groundtruth box is very small,
+        # we can say that there is not an interesting crowd box for that proposals. Thus,
+        # create an array selecting which "best proposals" are crowds and which aren't.
+        no_crowd_mask = (crowd_iou_max < 0.001)
+
+        ## ASSIGNING FG/BG INDEX ##
+
+        # Now, remember that some RoIs from the RPN are positive while some are negative.
+        # We must determine which are which in the same way as above:
+        # 1: Get the best IoU from each row
+        roi_iou_max = tf.reduce_max(overlaps, axis=1)
+        # So we create two boolean masks:
+        # 1) positives:
+        positive_roi_mask = (roi_iou_max >= 0.5)
+        positive_indices = tf.where(positive_roi_mask)[:,0]
+        # 2) negatives: we consider both max IoUs inferior to 0.5 and crowd RoIs.
+        negative_indices = tf.where(tf.logical_and(roi_iou_max < 0.5, no_crowd_mask))[:,0]
+
+        ## SUBSAMPLE PROPOSALS BY KEEPING A GOOD RATIO ##
+
+        # Now, we need to face a problem that is also mentioned in the original Faster-RCNN paper.
+
+        # "It is possible to optimize
+        # for the loss functions of all anchors, but this will
+        # bias towards negative samples as they are dominate.
+        # Instead, we randomly sample 256 anchors in an image
+        # to compute the loss function of a mini-batch, where
+        # the sampled positive and negative anchors have a
+        # ratio of up to 1:1. If there are fewer than 128 positive
+        # samples in an image, we pad the mini-batch with
+        # negative ones." 
+        
+        # Keep in mind that in that implementation, the model was trained using 512 proposals per image, 
+        # while we only keep 256 to avoid excessive padding in cases where not enough proposals are
+        # generated. Therefore, we choose to go for a safer "subsampling 33% percent of the total positive 
+        # subsamples" and balance with negative proposals to keep a 1:2 ratio between positives and negatives.
+        positive_count = int(TRAIN_ROIS_PER_IMAGE * ROI_POSITIVE_RATIO)
+        positive_indices = tf.random.shuffle(positive_indices)[:positive_count]
+        positive_count = tf.shape(positive_indices)[0]
+        # How many negatives do we need exactly? The ratio is 0.3 = positive/negative, so negative = 1/0.33 * positive
+        negative_count = tf.cast(1.0 / ROI_POSITIVE_RATIO * tf.cast(positive_count, tf.float32), tf.int32)
+        # To keep it 1:2:
+        negative_count -= positive_count
+        negative_indices = tf.random.shuffle(negative_indices)[:negative_count]
+        # Gather selected ROIs
+        positive_rois = tf.gather(proposals, positive_indices)
+        negative_rois = tf.gather(proposals, negative_indices)
+
+        ## MATCH SELECTED POSITIVE ROIS WITH THEIR GT BBOX ##
+
+        # Assign positive RoIs to GT boxes gathering results from the overlaps matrix
+        positive_overlaps = tf.gather(overlaps, positive_indices)
+        # Since there might be no GT boxes for the image and the overlaps matrix can be empty,
+        # we check that positive_overlaps contains row that are longer than the empty tensor.
+        roi_gt_box_assignment = tf.cond(
+            tf.greater(tf.shape(positive_overlaps)[1], 0),
+            # If the check succeeds, we the groundtruth box becomes the position of the element in the row
+            # that has the larger value
+            true_fn = lambda: tf.argmax(positive_overlaps, axis=1),
+            # Otherwise, we return an empty tensor.
+            false_fn = lambda: tf.cast(tf.constant([]),tf.int64)
+        )
+        # We then gather gt_boxes and classes using the map above.
+        roi_gt_boxes = tf.gather(gt_boxes, roi_gt_box_assignment)
+        roi_gt_class_ids = tf.gather(gt_class_ids, roi_gt_box_assignment)
+
+        ## CALCULATE BB REFINEMENTS BETWEEN GT BBOX AND ASSOCIATED PROPOSALS ##
+
+        # What is the difference between the GT boxes and the proposals in terms of deltas? 
+        # We need to compute the bounding box refinements for these ROIs
+        box = tf.cast(positive_rois, tf.float32)
+        gt_box = tf.cast(roi_gt_boxes, tf.float32)
+        
+        # Remember boxes are (y1,x1,y2,x2)
+        height = box[:, 2] - box[:, 0]
+        width = box[:, 3] - box[:, 1]
+        center_y = box[:, 0] + 0.5 * height
+        center_x = box[:, 1] + 0.5 * width
+
+        # Same for GT
+        gt_height = gt_box[:, 2] - gt_box[:, 0]
+        gt_width = gt_box[:, 3] - gt_box[:, 1]
+        gt_center_y = gt_box[:, 0] + 0.5 * gt_height
+        gt_center_x = gt_box[:, 1] + 0.5 * gt_width
+
+        # We calculate deltas as the difference between proposals and GTs
+        # in the usual way, like box refinements are calculated
+        dy = (gt_center_y - center_y) / height
+        dx = (gt_center_x - center_x) / width
+        dh = tf.log(gt_height / height)
+        dw = tf.log(gt_width / width)
+
+        deltas = tf.stack([dy, dx, dh, dw], axis=1)
+
+        # Again, the deltas get divided by the STDEV in Matterport's implementation.
+        # deltas /= config.BBOX_STD_DEV
+
+        ## ASSOCIATE OBJECT MASKS TO PROPOSALS ##
+
+        # Masks are currently in a [height, width, N] tensor.
+        # Transpose masks to [N, height, width] and add a dimension at the end ([N, height, width, 1])
+        transposed_masks = tf.expand_dims(tf.transpose(gt_masks, [2, 0, 1]), -1)
+        # Pick the right mask for each ROI by using the same mask we have computed before.
+        roi_masks = tf.gather(transposed_masks, roi_gt_box_assignment)
+
+        boxes = positive_rois
+        # Give a unique ID to each mask
+        box_ids = tf.range(0, tf.shape(roi_masks)[0])
+
+        # Now we use the crop_and_resize function which is basically tensorflow's implementation of 
+        # the ROIAlign method. 
+        # TODO: Talk about ROIAlign and crop_and_resize.
+        masks = tf.image.crop_and_resize(tf.cast(roi_masks, tf.float32),
+                                         boxes, 
+                                         box_ids,
+                                         MASK_SHAPE)
+
+        # Remove the extra dimension (depth) for the output
+        masks = tf.squeeze(masks, axis=3)
+        # Also, we want masks to be filled with 0 or 1 to use them in the binary crossentropy loss, 
+        # so we need to threshold GT masks at 0.5
+        # TODO: talk about this
+        masks = tf.round(masks)
+
+        # Finally, we can produce the output:
+        # - rois are positive RoIs concatenated with negatives
+        rois = tf.concat([positive_rois, negative_rois], axis=0)
+        # We also need to pad this tensor and the following with zeroes in the positions that are not used
+        # by negative RoIs
+        N = tf.shape(negative_rois)[0] # Number of negative rois
+        P = tf.maximum(TRAIN_ROIS_PER_IMAGE - tf.shape(rois)[0], 0) # The number of positions to pad
+        # About the padding function: it receives as input the tensor to pad and a [D,2] tensor, where D
+        # is the rank of the first tensor (in our case, 2). For each dimension d, [d,0] and [d,1] indicate
+        # how many values should we pad on before and after the contents of the tensor in dimension d.     
+        rois = tf.pad(rois, [(0, P),(0, 0)]) # Add a padding of P elements on the right on the first dimension 
+                                             # (the other dimension contains the coordinates and 
+                                             # should not be changed)
+        roi_gt_boxes = tf.pad(roi_gt_boxes, [(0, N+P), (0,0)]) # Negative ROIs are not included in GT
+                                                               # boxes of course, so we need to pad also for them
+        roi_gt_class_ids = tf.pad(roi_gt_class_ids, [(0, N+P)]) # This is a one dimensional tensor
+        deltas = tf.pad(deltas, [(0,N+P),(0,0)]) # Deltas and masks of BG ROIs should not be included and be
+        masks = tf.pad(deltas, [(0,N+P), (0,0)]) # padded.
+
+        return rois, roi_gt_class_ids, deltas, masks
+
     def compute_output_shape(self, input_shape):
         return [
             (None, TRAIN_ROIS_PER_IMAGE, 4), # ROIs
@@ -364,7 +522,6 @@ class DetectionTargetLayer(KL.Layer):
 
     def compute_mask(self, inputs, mask=None):
         return [None, None, None, None]
-
 
 
 ###########################
@@ -732,11 +889,31 @@ def build(mode):
                 rpn_rois, input_gt_class_ids, gt_boxes, input_gt_masks
             ])
 
+        output_rois = tf.identity(rois, name="output_rois")
+
+        # Here we should add the network heads: the classifier and the mask graph.
+        # For now, this is a big TODO.
+
+        # RPN losses:
+        # 1. Compute loss for the classification BG/FG.
+        rpn_class_loss = KL.Lambda(lambda x: rpn_class_loss_graph(*x), name="rpn_class_loss")(
+            [input_rpn_match, rpn_class_logits])
+        # 2. Compute loss for the bounding box regression.
+        rpn_bbox_loss = KL.Lambda(lambda x: rpn_bbox_loss_graph(*x), name="rpn_bbox_loss")(
+            [input_rpn_bbox, input_rpn_match, rpn_deltas])
+
+        # Model
+        inputs = [input_image, input_rpn_match, input_rpn_bbox, input_gt_class_ids,
+            input_gt_boxes, input_gt_masks]
+        outputs = [rpn_class_logits, rpn_classes, rpn_deltas,
+            rpn_rois, output_rois, rpn_class_loss, rpn_bbox_loss]
+
+    elif mode == 'evaluation':
+        inputs = [input_image, input_anchors]
+        outputs = [rpn_classes, rpn_rois]
 
     # Finally instantiate the Keras model and return it
-    model = KM.Model(inputs=[input_image, input_anchors],
-                     outputs=[rpn_classes, rpn_rois],
-                     name='rpn')
+    model = KM.Model(inputs, outputs, name='rpn')
 
     return model
 
@@ -1045,7 +1222,7 @@ def denormalize_image(image):
     
     Returns an image (numpy matrix) containing the restored image images ([h, w, 3]).
     '''
-    return np.asarray(image + MEAN_PIXEL, dtype=np.int16)
+    return np.asarray(image + MEAN_PIXEL, dtype=np.uint8)
 
 def get_anchors(image_shape):
     """
@@ -1087,6 +1264,20 @@ def get_anchors(image_shape):
         anchors = norm_boxes(anchors, image_shape[:2])
         ANCHOR_CACHE[tuple(image_shape)] = anchors
     return ANCHOR_CACHE[tuple(image_shape)]
+
+##############
+### LOSSES ###
+##############
+
+def rpn_class_loss_graph(rpn_match, rpn_class_logits):
+    """
+    Graph that calculates the RPN anchor classifier loss.
+
+    rpn_match: [batch, anchors, 1]. Anchor match type. 1=positive,
+               -1=negative, 0=neutral anchor.
+    rpn_class_logits: [batch, anchors, 2]. RPN classifier logits for BG/FG.
+    """
+    #TODO
 
 
 ##########################
