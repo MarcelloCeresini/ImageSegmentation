@@ -1,8 +1,9 @@
 # TODOs:
-# TODO: Add training code
+# TODO: Add training code (WIP)
 # TODO: Add the rest of Mask-RCNN
 # TODO: Check if logits are REALLY needed (they may be useless debug-only tensors)
 # TODO: Fix some comments in functions (mostly add output shapes and stuff)
+# TODO: Huge refactor and possibly change the way some layers/functions work
 
 import math
 import numpy as np
@@ -16,6 +17,7 @@ import tensorflow as tf
 import tensorflow.keras.layers as KL
 import tensorflow.keras.models as KM
 import tensorflow.keras.backend as K
+import tensorflow.keras.losses as KLS
 
 from skimage.transform import resize
 
@@ -316,6 +318,7 @@ class DetectionTargetLayer(KL.Layer):
                     for o, n in zip(outputs, out_names)]
         return result
 
+    @tf.function
     def detection_targets_graph(self, proposals, gt_class_ids, gt_boxes, gt_masks):
         """
         See documentation for the layer for the explanation of the inputs to this graph.
@@ -669,7 +672,11 @@ class RefinementLayer(KL.Layer):
         # Note: at this point, boxes is a [G,N,4] tensor, G being the elements in the batch,
         # N being 6000 (or the number of pre-nms anchors). 
         # We need to do apply the deltas for every item in the batch.
-        boxes = apply_box_deltas_batched(pre_nms_anchors, deltas)
+        # TODO: Right now I have deactivated the deltas application because I need to fix
+        #       anchors positions. When it's fixed, reactivate them uncommenting the line 
+        #       below.
+        boxes = pre_nms_anchors
+        #boxes = apply_box_deltas_batched(pre_nms_anchors, deltas)
         # Clip to image boundaries (in normalized coordinates, clip in 0..1 range)
         window = np.array([0, 0, 1, 1], dtype=np.float32)
         boxes = clip_boxes_batched(boxes, window)
@@ -694,7 +701,6 @@ class RefinementLayer(KL.Layer):
 
 class BadImageSizeException(Exception):
     pass
-
 
 def build(mode):
     """
@@ -721,6 +727,7 @@ def build(mode):
     # (class IDs, bounding boxes and masks) as additional inputs
     if mode == 'training':
         # RPN
+        # TODO: What are these two inputs exactly?
         input_rpn_match = KL.Input(
             shape=[None, 1], name='input_rpn_match', dtype=tf.int32
             # TODO: can we use int8 or a boolean for optimization?
@@ -813,6 +820,8 @@ def build(mode):
 
     if mode == 'training':
         # Anchors are not passed as input in training mode
+        # TODO: the mechanism that creates anchors needs to be fixed.
+        #       We should use multiscale anchors!!
         anchors = get_anchors(IMAGE_SHAPE)
         # As in the testing preparation code, anchors must be replicated
         # in the batch dimension
@@ -824,6 +833,7 @@ def build(mode):
         # by running ops on it. Specific ops allow you to read and modify 
         # the values of this tensor.
         # Basically, we need a layer that yields a tensor containing the anchors
+        # TODO: Why not doing it with tensorflow directly?
         anchors = KL.Lambda(lambda x: tf.Variable(anchors), name='anchors')(input_image)
     elif mode == 'evaluation':
         # In testing mode, anchors are given as input to the network
@@ -899,7 +909,7 @@ def build(mode):
         rpn_class_loss = KL.Lambda(lambda x: rpn_class_loss_graph(*x), name="rpn_class_loss")(
             [input_rpn_match, rpn_class_logits])
         # 2. Compute loss for the bounding box regression.
-        rpn_bbox_loss = KL.Lambda(lambda x: rpn_bbox_loss_graph(*x), name="rpn_bbox_loss")(
+        rpn_bbox_loss = KL.Lambda(lambda x: rpn_box_regression_loss_graph(*x), name="rpn_bbox_loss")(
             [input_rpn_bbox, input_rpn_match, rpn_deltas])
 
         # Model
@@ -1028,6 +1038,7 @@ def trim_zeros_graph(boxes, name='trim_zeros'):
     boxes = tf.boolean_mask(boxes, non_zeros, name=name)
     return boxes, non_zeros
 
+@tf.function
 def calculate_overlaps_matrix_graph(boxes1, boxes2):
     """
     A tensorflow graph function that computes the intersection over union
@@ -1173,7 +1184,7 @@ def norm_boxes(boxes, shape):
     ])
     return ((boxes - shift) / scale).astype(np.float32)
 
-
+@tf.function
 def norm_boxes_tf(boxes, shape):
     '''Same as the function above, but using tensorflow to deal with tensors
     '''
@@ -1201,7 +1212,7 @@ def denorm_boxes(boxes, shape):
     shift = np.array([0, 0, 1, 1])
     return np.around((boxes * scale) + shift).astype(np.int32)
 
-
+@tf.function
 def denorm_boxes_tf(boxes, shape):
     '''
     Same as the function above, but using tensorflow operation to deal with tensors
@@ -1249,8 +1260,9 @@ def get_anchors(image_shape):
         # Each scale is bound to a different level of the pyramid
         # On the other hand, all ratios of the proposals are used in all levels.
         for i in range(len(RPN_ANCHOR_SCALES)):
-            anchors.append(generate_anchors(RPN_ANCHOR_SCALES[i],  # Use only the appropriate scale for the level
-                                            RPN_ANCHOR_RATIOS,  # But use all ratios for the BBs
+            # TODO: Testing without selecting a specific scale
+            anchors.append(generate_anchors(RPN_ANCHOR_SCALES,  # (Use only the appropriate scale for the level) NOT REALLY FOR NOW
+                                            RPN_ANCHOR_RATIOS,  # Use all ratios for the BBs
                                             backbone_shapes[i],  # At this level, the image has this shape...
                                             BACKBONE_STRIDES[i],  # Or better, is scaled of this quantity
                                             RPN_ANCHOR_STRIDE  # Frequency of sampling in the feature map
@@ -1270,14 +1282,10 @@ def get_anchors(image_shape):
 ##############
 
 def rpn_class_loss_graph(rpn_match, rpn_class_logits):
-    """
-    Graph that calculates the RPN anchor classifier loss.
+    raise NotImplementedError
 
-    rpn_match: [batch, anchors, 1]. Anchor match type. 1=positive,
-               -1=negative, 0=neutral anchor.
-    rpn_class_logits: [batch, anchors, 2]. RPN classifier logits for BG/FG.
-    """
-    #TODO
+def rpn_box_regression_loss_graph(target_deltas, rpn_match, rpn_bbox):
+    raise NotImplementedError
 
 
 ##########################
