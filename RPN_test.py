@@ -1282,10 +1282,77 @@ def get_anchors(image_shape):
 ##############
 
 def rpn_class_loss_graph(rpn_match, rpn_class_logits):
-    raise NotImplementedError
+    """
+    Graph that calculates the RPN anchor classifier loss.
+
+    rpn_match: [batch, anchors, 1]. Anchor match type. 1=positive,
+               -1=negative, 0=neutral anchor.
+    rpn_class_logits: [batch, anchors, 2]. RPN classifier logits for BG/FG.
+    """
+    # The classification loss is categorical crossentropy. This loss function
+    # calculates the difference between the logits (which represent the probability
+    # distribution of a RPN proposal to be FG or BG) and the actual class.
+    # Note that the actual class can be positive (1), negative (-1) or neutral (0).
+    # Neutral proposals should not contribute to the loss.
+
+    # Squeeze the last dimension of the rpn_match to make things simpler
+    rpn_match = tf.squeeze(rpn_match)
+    # Select usable indices for the loss
+    usable_indices = tf.where(K.not_equal(rpn_match, 0))
+    # Filter the usable rows for the loss
+    rpn_class_logits = tf.gather_nd(rpn_class_logits, usable_indices)
+    anchor_class = tf.gather_nd(rpn_match, usable_indices)
+    # Transform -1/1 in 0/1 for positive and negative in anchor_class
+    anchor_class = K.cast(K.equal(anchor_class, 1), tf.int8) # Cast a boolean map into a int map (0/1)
+    # Apply crossentropy loss. We use Keras's SparseCategoricalCrossentropy because labels
+    # are not one-hot encoded. We let the function transform logits into a probability distribution.
+    scceloss = KLS.SparseCategoricalCrossentropy(from_logits=True)
+    loss = scceloss(anchor_class, rpn_class_logits)
+    # In case the loss tensor is empty (eg. all RPN bboxes were considered neutral), replace it with a 0.
+    loss = K.switch(tf.size(loss) > 0, K.mean(loss), tf.constant(0.0))
+    return loss
 
 def rpn_box_regression_loss_graph(target_deltas, rpn_match, rpn_bbox):
-    raise NotImplementedError
+    """
+    Returns the RPN bounding box loss graph.
+
+    Inputs:
+    - target_deltas: [batch, max_positive_anchors, (dy, dx, log(dh), log(dw))].
+        May be 0-padded in case some bbox deltas are unused.
+    - rpn_match: [batch, anchors, 1]. Anchor match type. 1=positive,
+               -1=negative, 0=neutral anchor.
+    - rpn_bbox: [batch, anchors, (dy, dx, log(dh), log(dw))]
+    """
+    # Like for the classification loss, positive anchors contribute to the loss, 
+    # but neutral anchors don't. In addition, also negative anchors don't contribute
+    # to the loss, because it's pointless to calculate the deltas of background proposals.
+    rpn_match = K.squeeze(rpn_match, -1)
+    indices = tf.where(K.equal(rpn_match, 1))
+    rpn_bbox = tf.gather_nd(rpn_bbox, indices)
+
+    # We also need to trim target bounding box deltas to the same length
+    # 1. Calculate how many positive box are in each image of the batch
+    counts = K.sum(K.cast(K.equal(a, 1), tf.int32), axis=1)
+    # For example, counts can be something like [25, 40, 32, 28] for a batch of 4 images.
+    # 2. Then, take exactly the number of deltas that have been computed this way
+    #    for each slice and concatenate them.
+    bbs = []
+    for i, l in enumerate(tf.unstack(target_deltas)):
+        bbs.append(tf.slice(l, [0,0], [counts[i], 4])) # Start from [0,0] and take the 
+                                                       # appropriate number of boxes.
+    target_deltas = tf.concat(bbs, axis=0)
+
+    # We use the smooth l1 loss, which is more resistent to outliers with respect to
+    # classic l1. In TensorFlow, this is implemented as "Huber loss".
+    # Basically:
+    # loss = 0.5 * x^2                  if |x| <= d
+    # loss = 0.5 * d^2 + d * (|x| - d)  if |x| > d
+    # Where d is an hyperparameter (default is 1).
+    h = KLS.Huber()
+    loss = h(target_deltas, rpn_bbox)
+    # As above, in case of empty loss tensor.
+    loss = K.switch(tf.size(loss) > 0, K.mean(loss), tf.constant(0.0))
+    return loss
 
 
 ##########################
