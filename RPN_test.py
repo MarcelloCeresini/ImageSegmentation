@@ -1,9 +1,15 @@
 # TODOs:
 # TODO: Add training code (WIP)
 # TODO: Add the rest of Mask-RCNN
-# TODO: Check if logits are REALLY needed (they may be useless debug-only tensors)
 # TODO: Fix some comments in functions (mostly add output shapes and stuff)
 # TODO: Huge refactor and possibly change the way some layers/functions work
+
+# I have checked and done tons of tests: the instability of proposals in the 
+# final image is ENTIRELY due to the fact that the model is untrained: thus,
+# the deltas are random and the objectness score that we use to filter out 
+# anchors and proposals is also random. This is good, because it means that
+# the code has no errors regarding anchor creations, but we need to train the
+# RPN. This is still a big TODO and WIP.
 
 import math
 import numpy as np
@@ -59,7 +65,7 @@ TOP_DOWN_PYRAMID_SIZE = 256
 # Scales for the anchor boxes. They represent the square-rooted area
 # of the anchor (so, a scale of 32 means that the anchor has an area of
 # 32^2 pixels). Mathematically, they are sqrt(width*height).
-RPN_ANCHOR_SCALES = (32, 64, 128, 256, 512)
+RPN_ANCHOR_SCALES = [32, 64, 128, 256, 512]
 # Ratios of anchors at each cell (width/height)
 # A value of 1 represents a square anchor, and 2 is a wide anchor
 RPN_ANCHOR_RATIOS = [0.5, 1, 2]
@@ -672,11 +678,7 @@ class RefinementLayer(KL.Layer):
         # Note: at this point, boxes is a [G,N,4] tensor, G being the elements in the batch,
         # N being 6000 (or the number of pre-nms anchors). 
         # We need to do apply the deltas for every item in the batch.
-        # TODO: Right now I have deactivated the deltas application because I need to fix
-        #       anchors positions. When it's fixed, reactivate them uncommenting the line 
-        #       below.
-        boxes = pre_nms_anchors
-        #boxes = apply_box_deltas_batched(pre_nms_anchors, deltas)
+        boxes = apply_box_deltas_batched(pre_nms_anchors, deltas)
         # Clip to image boundaries (in normalized coordinates, clip in 0..1 range)
         window = np.array([0, 0, 1, 1], dtype=np.float32)
         boxes = clip_boxes_batched(boxes, window)
@@ -1129,8 +1131,9 @@ def generate_anchors(scales, ratios, shape, feature_stride, anchor_stride):
 
     # What are the positions in the feature space?
     # We use arange to create evenly spaced sequences from 0 for all the
-    # rows skipping the number of rows required by the anchor stride.
-    # We multiply by the feature stride so that we get image-aligned coordinates
+    # rows using as a step size the anchor stride.
+    # We multiply by the stride of the feature map over the image,
+    # so that we get image-aligned coordinates
     shifts_y = np.arange(0, shape[0], anchor_stride) * feature_stride
     # Same for columns
     shifts_x = np.arange(0, shape[1], anchor_stride) * feature_stride
@@ -1261,7 +1264,7 @@ def get_anchors(image_shape):
         # On the other hand, all ratios of the proposals are used in all levels.
         for i in range(len(RPN_ANCHOR_SCALES)):
             # TODO: Testing without selecting a specific scale
-            anchors.append(generate_anchors(RPN_ANCHOR_SCALES,  # (Use only the appropriate scale for the level) NOT REALLY FOR NOW
+            anchors.append(generate_anchors(RPN_ANCHOR_SCALES,  # (Use only the appropriate scale for the level) NOT FOR NOW
                                             RPN_ANCHOR_RATIOS,  # Use all ratios for the BBs
                                             backbone_shapes[i],  # At this level, the image has this shape...
                                             BACKBONE_STRIDES[i],  # Or better, is scaled of this quantity
@@ -1271,6 +1274,7 @@ def get_anchors(image_shape):
         # Transform the list in an array [N, (y1,x1,y2,x2)] which contains all generated anchors
         # The sorting of the scale is bound to the scaling of the feature maps,
         # So first we have all anchors at scale 1/4, then all anchors at scale 1/8 and so on...
+        # TODO: is that true? For now we are using all scales with different strides and backbone shapes
         anchors = np.concatenate(anchors, axis=0)
         # Normalize anchors coordinates
         anchors = norm_boxes(anchors, image_shape[:2])
@@ -1386,6 +1390,7 @@ def detect(images, model: KM.Model):
     # The network also receives anchors as inputs, so we need a function
     # that returns the anchors
     anchors = get_anchors(image_shape)
+
     # The original matterport implementation comments the following action
     # saying that Keras requires it. Basically, anchors are replicated among
     # the batch dimension. In our case, batch size is simply one.
@@ -1406,6 +1411,16 @@ if __name__ == "__main__":
     '''
     Entry point for the code
     '''
+    # GPU debugging
+    gpus = tf.config.list_physical_devices('GPU')
+    if gpus:
+        try:
+            # Set memory growth and only one visible GPU (for now)
+            tf.config.set_visible_devices(gpus[0], 'GPU')
+            tf.config.experimental.set_memory_growth(gpus[0], True)
+        except RuntimeError as e:
+            print(e)
+
     model = build(EXECUTION_MODE)
     # We need to compile the model before using it
 
@@ -1428,7 +1443,6 @@ if __name__ == "__main__":
         condition = np.where(classes > 0.5)[0]
         # If there is at least a positive bbox, draw it, otherwise draw random ones
         if len(condition):
-            print("Foreground Bounding Boxes have been found.")
             bboxes = bboxes[condition]
         # Sort by probability
         rnd_bboxes = sorted(np.arange(0, bboxes.shape[0], 1),
@@ -1440,7 +1454,7 @@ if __name__ == "__main__":
         ax.imshow(denormalize_image(image))
         for bb in rnd_bboxes:
             rect = Rectangle(
-                (bb[0], bb[1]), bb[2] - bb[0], bb[3] - bb[1],
+                (bb[1], bb[0]), bb[3] - bb[1], bb[2] - bb[0],
                 linewidth=1, edgecolor='r', facecolor='none'
             )
             ax.add_patch(rect)
