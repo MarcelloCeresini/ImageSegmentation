@@ -150,13 +150,6 @@ class ModelConfig():
     MASK_SHAPE = [28, 28]  # If we change this, we also need to make adjustments
                                 # to the mask branch.
 
-    ### ANCHOR CACHE ###
-    # TODO: Move this somewhere else.
-    # Anchor cache: when dealing with images of the same shape, we don't want
-    # to calculate anchor coordinates over and over again, thus we mantain
-    # a cache
-    ANCHOR_CACHE = {}
-
     def __init__(self):
         # Batch size for training and testing
         self.BATCH_SIZE = self.IMAGES_PER_GPU * self.GPU_COUNT
