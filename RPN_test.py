@@ -13,12 +13,16 @@
 
 import math
 import numpy as np
+import re
+import datetime
+import os
 
 import matplotlib.pyplot as plt
 import matplotlib.image as mpimg
 from matplotlib.patches import Rectangle
 
 import tensorflow as tf
+from tensorflow import keras
 # Refer to TF's internal version of Keras for more stability
 import tensorflow.keras.layers as KL
 import tensorflow.keras.models as KM
@@ -121,6 +125,22 @@ ANCHOR_CACHE = {}
 
 # Execution mode: Training or Evaluation
 EXECUTION_MODE = 'evaluation'  # or 'training
+
+# Training parameters:
+# Learning rate and momentum
+# The Mask RCNN paper uses lr=0.02, decreased to 0.002 after 120k iterations, 
+# but Matterport's implementation reduces this to 0.001 because in their opinion
+# Tensorflow's implementation of the used optimizer causes weights to explode. 
+# For now, we set it at 0.002 following the decreased learning rate from the paper
+# but also staying close to Matterport's implementation.
+LEARNING_RATE = 0.002
+# Momentum is 0.9 from the paper
+LEARNING_MOMENTUM = 0.9
+# Weight decay regularization, also taken directly from the paper
+WEIGHT_DECAY = 0.0001
+# Gradient norm clipping. To avoid exploding gradients, the derivatives are clipped
+# to have a L2 norm of maximum 5.0.
+GRADIENT_CLIP_NORM = 5.0
 
 
 ##########################
@@ -888,7 +908,7 @@ def build(mode):
         # We haven't explored the dataset correctly yet, so we'll skip this
         # part for now
 
-        # TODO
+        # TODO: this is needed for the computation of the classification loss.
         #active_class_ids = KL.Lambda(
         #    lambda x: parse_image_meta_graph(x)["active_class_idx"]
         #)(input_image_meta)
@@ -929,6 +949,133 @@ def build(mode):
 
     return model
 
+################
+### TRAINING ###
+################
+
+def compile(model:KM.Model, learning_rate, momentum):
+    '''
+    Compile the model for training. This means setting the optimizer,
+    the losses, regularization and others so that we have a train-ready model.
+    '''
+    # Optimizer
+    # We choose classic SGD as an optimizer.
+    optimizer = keras.optimizers.SGD(
+        learning_rate=learning_rate,
+        momentum=momentum,
+        clipnorm=GRADIENT_CLIP_NORM
+    )
+
+    # TODO: does it really need to be so complicated?
+
+    # Add losses
+    model._losses = [] # Clear losses
+    loss_names = ["rpn_class_loss",  "rpn_bbox_loss"]
+    for name in loss_names:
+        # Retrieve the loss layer from the model
+        layer = model.get_layer(name)
+        # If already present (shouldn't be) continue
+        if layer.output in model.losses:
+            continue
+        # Apply mean within the batch
+        loss = tf.reduce_mean(layer.output, keepdims=True)
+        # Add loss
+        model.add_loss(loss)
+    
+    # Add L2 Regularization
+    # Skip gamma and beta weights of batch normalization layers.
+    reg_losses = [
+        keras.regularizers.l2(WEIGHT_DECAY)(w) / tf.cast(tf.size(w), tf.float32)
+        for w in model.trainable_weights
+        if 'gamma' not in w.name and 'beta' not in w.name]
+    model.add_loss(tf.add_n(reg_losses))
+
+    # Compile the model
+    model.compile(
+        optimizer=optimizer,
+        loss=[None] * len(model.outputs)
+    )
+
+    # Add metrics for losses
+    for name in loss_names:
+        if name in model.metrics_names:
+            continue
+        layer = model.get_layer(name)
+        model.metrics_names.append(name)
+        loss = tf.reduce_mean(layer.output, keepdims=True)
+        model.metrics.append(loss)
+    
+def set_trainable(model:KM.Model, layer_regex, indent=0, verbose=1):
+    """Sets model layers as trainable if their names match
+    the given regular expression.
+    """
+    layers = model.layers
+    log("Selecting trainable layers in model")
+    for layer in layers:
+        # Is the layer a model?
+        if layer.__class__.__name__ == 'Model':
+            print("In model: ", layer.name)
+            # Recursive call
+            set_trainable(
+                layer, layer_regex, indent=indent + 4)
+            continue
+
+        # Does the layer have weights at all?
+        if not layer.weights:
+            continue
+
+        # Is the layer trainable?
+        trainable = bool(re.fullmatch(layer_regex, layer.name))
+        # Update layer. If layer is a container, update inner layer.
+        if layer.__class__.__name__ == 'TimeDistributed':
+            layer.layer.trainable = trainable
+        else:
+            layer.trainable = trainable
+        # Print trainable layer names
+        if trainable and verbose > 0:
+            log("{}{:20}   ({})".format(" " * indent, layer.name,
+                                        layer.__class__.__name__))
+
+def set_log_dir(model_dir, model_path=None):
+    """Sets the model log directory and epoch counter.
+
+    model_path: If None, or a format different from what this code uses
+        then set a new log directory and start epochs from 0. Otherwise,
+        extract the log directory and the epoch counter from the file
+        name.
+    model_dir: Where to save logs and trained weights
+    """
+    # Set date and epoch counter as if starting a new model
+    epoch = 0
+    now = datetime.datetime.now()
+
+    # If we have a model path with date and epochs use them
+    if model_path:
+        # Continue from we left of. Get epoch and date from the file name
+        # A sample model path might look like:
+        # TODO update names
+        # \path\to\logs\food20211029T2315\rpn_food_0001.h5 (Windows)
+        # /path/to/logs/food20211029T2315/rpn_food_0001.h5 (Linux)
+        regex = r".*[/\\][\w-]+(\d{4})(\d{2})(\d{2})T(\d{2})(\d{2})[/\\]rpn\_food\_[\w-]+(\d{4})\.h5"
+        m = re.match(regex, model_path)
+        if m:
+            now = datetime.datetime(int(m.group(1)), int(m.group(2)), int(m.group(3)),
+                                    int(m.group(4)), int(m.group(5)))
+            # Epoch number in file is 1-based, and in Keras code it's 0-based.
+            # So, adjust for that then increment by one to start from the next epoch
+            epoch = int(m.group(6)) - 1 + 1
+            print('Re-starting from epoch %d' % epoch)
+
+    # Directory for training logs
+    log_dir = os.path.join(model_dir, "{}{:%Y%m%dT%H%M}".format(
+        'food', now))
+
+    # Path to save after each epoch. Include placeholders that get filled by Keras.
+    checkpoint_path = os.path.join(log_dir, "rpn_food_*epoch*.h5"))
+    checkpoint_path = checkpoint_path.replace(
+        "*epoch*", "{epoch:04d}")
+
+    return log_dir, checkpoint_path
 
 ###############################
 ### PREPROCESSING UTILITIES ###
@@ -1019,6 +1166,20 @@ def preprocess_inputs(images):
 ######################
 ### MISC UTILITIES ###
 ######################
+
+def log(text:str, array:np.array=None):
+    """Prints a text message. And, optionally, if a Numpy array is provided it
+    prints it's shape, min, and max values.
+    """
+    if array is not None:
+        text = text.ljust(25)
+        text += ("shape: {:20}  ".format(str(array.shape)))
+        if array.size:
+            text += ("min: {:10.5f}  max: {:10.5f}".format(array.min(),array.max()))
+        else:
+            text += ("min: {:10}  max: {:10}".format("",""))
+        text += "  {}".format(array.dtype)
+    print(text)
 
 def trim_zeros_graph(boxes, name='trim_zeros'):
     """
@@ -1263,8 +1424,7 @@ def get_anchors(image_shape):
         # Each scale is bound to a different level of the pyramid
         # On the other hand, all ratios of the proposals are used in all levels.
         for i in range(len(RPN_ANCHOR_SCALES)):
-            # TODO: Testing without selecting a specific scale
-            anchors.append(generate_anchors(RPN_ANCHOR_SCALES,  # (Use only the appropriate scale for the level) NOT FOR NOW
+            anchors.append(generate_anchors(RPN_ANCHOR_SCALES[i],  # Use only the appropriate scale for the level
                                             RPN_ANCHOR_RATIOS,  # Use all ratios for the BBs
                                             backbone_shapes[i],  # At this level, the image has this shape...
                                             BACKBONE_STRIDES[i],  # Or better, is scaled of this quantity
@@ -1274,7 +1434,6 @@ def get_anchors(image_shape):
         # Transform the list in an array [N, (y1,x1,y2,x2)] which contains all generated anchors
         # The sorting of the scale is bound to the scaling of the feature maps,
         # So first we have all anchors at scale 1/4, then all anchors at scale 1/8 and so on...
-        # TODO: is that true? For now we are using all scales with different strides and backbone shapes
         anchors = np.concatenate(anchors, axis=0)
         # Normalize anchors coordinates
         anchors = norm_boxes(anchors, image_shape[:2])
@@ -1422,40 +1581,42 @@ if __name__ == "__main__":
             print(e)
 
     model = build(EXECUTION_MODE)
-    # We need to compile the model before using it
+    # We need to compile the model before using it for training
+    # TODO
 
-    # Test the detection with one image (stack it n times to simulate a batch)
-    img = np.stack([mpimg.imread('res/elephant.jpg')] * BATCH_SIZE)
-    mod_images, rpn_classes, rpn_bboxes = detect(img, model)
+    if EXECUTION_MODE == 'evaluation':
+        # Test the detection with one image (stack it n times to simulate a batch)
+        img = np.stack([mpimg.imread('res/elephant.jpg')] * BATCH_SIZE)
+        mod_images, rpn_classes, rpn_bboxes = detect(img, model)
 
-    print("Shape of rpn_classes: {}".format(tf.shape(rpn_classes)))
-    print("Shape of rpn_bboxes: {}".format(tf.shape(rpn_bboxes)))
+        print("Shape of rpn_classes: {}".format(tf.shape(rpn_classes)))
+        print("Shape of rpn_bboxes: {}".format(tf.shape(rpn_bboxes)))
 
-    BBOXES_TO_DRAW = 100
+        BBOXES_TO_DRAW = 100
 
-    # Show each image sequentially and draw a selection of "the best" RPN bounding boxes.
-    # Note that the model is not trained yet so "the best" boxes are really just random.
-    for i in range(len(mod_images)):
-        image = mod_images[i, :, :]
-        classes = rpn_classes[i, :]
-        bboxes = rpn_bboxes[i, :, :]
-        # Select positive bboxes
-        condition = np.where(classes > 0.5)[0]
-        # If there is at least a positive bbox, draw it, otherwise draw random ones
-        if len(condition):
-            bboxes = bboxes[condition]
-        # Sort by probability
-        rnd_bboxes = sorted(np.arange(0, bboxes.shape[0], 1),
-                            key=lambda x, c=classes: c[x])[:BBOXES_TO_DRAW]
-        rnd_bboxes = bboxes[rnd_bboxes, :]
-        rnd_bboxes = denorm_boxes(rnd_bboxes, image.shape[:2])
-        fig, ax = plt.subplots()
-        # Note that the image was previously normalized so colors will be weird
-        ax.imshow(denormalize_image(image))
-        for bb in rnd_bboxes:
-            rect = Rectangle(
-                (bb[1], bb[0]), bb[3] - bb[1], bb[2] - bb[0],
-                linewidth=1, edgecolor='r', facecolor='none'
-            )
-            ax.add_patch(rect)
-        plt.show()
+        # Show each image sequentially and draw a selection of "the best" RPN bounding boxes.
+        # Note that the model is not trained yet so "the best" boxes are really just random.
+        for i in range(len(mod_images)):
+            image = mod_images[i, :, :]
+            classes = rpn_classes[i, :]
+            bboxes = rpn_bboxes[i, :, :]
+            # Select positive bboxes
+            condition = np.where(classes > 0.5)[0]
+            # If there is at least a positive bbox, draw it, otherwise draw random ones
+            if len(condition):
+                bboxes = bboxes[condition]
+            # Sort by probability
+            rnd_bboxes = sorted(np.arange(0, bboxes.shape[0], 1),
+                                key=lambda x, c=classes: c[x])[:BBOXES_TO_DRAW]
+            rnd_bboxes = bboxes[rnd_bboxes, :]
+            rnd_bboxes = denorm_boxes(rnd_bboxes, image.shape[:2])
+            fig, ax = plt.subplots()
+            # Note that the image was previously normalized so colors will be weird
+            ax.imshow(denormalize_image(image))
+            for bb in rnd_bboxes:
+                rect = Rectangle(
+                    (bb[1], bb[0]), bb[3] - bb[1], bb[2] - bb[0],
+                    linewidth=1, edgecolor='r', facecolor='none'
+                )
+                ax.add_patch(rect)
+            plt.show()
