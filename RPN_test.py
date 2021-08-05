@@ -1071,7 +1071,7 @@ def set_log_dir(model_dir, model_path=None):
         'food', now))
 
     # Path to save after each epoch. Include placeholders that get filled by Keras.
-    checkpoint_path = os.path.join(log_dir, "rpn_food_*epoch*.h5"))
+    checkpoint_path = os.path.join(log_dir, "rpn_food_*epoch*.h5")
     checkpoint_path = checkpoint_path.replace(
         "*epoch*", "{epoch:04d}")
 
@@ -1495,7 +1495,7 @@ def rpn_box_regression_loss_graph(target_deltas, rpn_match, rpn_bbox):
 
     # We also need to trim target bounding box deltas to the same length
     # 1. Calculate how many positive box are in each image of the batch
-    counts = K.sum(K.cast(K.equal(a, 1), tf.int32), axis=1)
+    counts = K.sum(K.cast(K.equal(rpn_match, 1), tf.int32), axis=1)
     # For example, counts can be something like [25, 40, 32, 28] for a batch of 4 images.
     # 2. Then, take exactly the number of deltas that have been computed this way
     #    for each slice and concatenate them.
