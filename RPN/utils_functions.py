@@ -1,5 +1,9 @@
 import numpy as np
 
+from skimage.transform import resize
+
+from config import ModelConfig
+
 def generate_anchors(scales, ratios, shape, feature_stride, anchor_stride):
     """
     Generate anchors for a given input shape
@@ -69,6 +73,82 @@ def generate_anchors(scales, ratios, shape, feature_stride, anchor_stride):
                             box_centers + 0.5 * box_sizes], axis=1)  # y2, x2
     # Concatenate on the columns obtaining x1,y1,x2,y2
     return boxes
+
+def preprocess_inputs(images, config:ModelConfig):
+    '''
+    Takes a list of images, modifies them to the format expected as an
+    input to the neural network.
+
+    images: a list of image matrices with different sizes. What is constant
+        is the third dimension of the image matrix, the depth (usually 3)
+    
+    Returns a numpy matrix containing the preprocessed image ([N, h, w, 3]).
+    The preprocessing includes resizing, zero-padding and normalization.
+    '''
+    preprocessed_inputs = []
+    windows = []
+    for image in images:
+        preprocessed_image, window, scale, padding = resize_image(
+            image, config.IMAGE_MIN_DIM, config.IMAGE_MAX_DIM
+        )
+        # In this case, for "normalize" we mean taking the image,
+        # subtracting the mean pixel to it
+        # and converting the result to float.
+        preprocessed_image = preprocessed_image.astype(np.float32) - config.MEAN_PIXEL
+        preprocessed_inputs.append(preprocessed_image)
+        windows.append(window)
+    # Pack into arrays
+    preprocessed_inputs = np.stack(preprocessed_inputs)
+    windows = np.stack(windows)
+    return preprocessed_inputs, windows
+
+def resize_image(image, min_dim, max_dim):
+    """
+    Resizes an image by keeping the aspect ratio unchanged and using zero-padding
+    to reshape it to a square.
+
+    Inputs:
+        - min_dim: the size of the smaller dimension
+        - max_dim: ensures that the image's longest side doesn't exceed this value
+
+    Outputs:
+        - image: the resized image
+        - window: (y1,x1,y2,x2): since padding might be inserted in the returned image,
+            this window contains the coordinates of the image part in the full image.
+            x2, y2 are not included, so the last "acceptable" line x2-1 and the last
+            "acceptable" column is y2-1
+        - scale: the scale factor used to resize the image
+        - padding: type of padding added to the image [(top, bottom), (left, right), (0, 0)]
+    """
+    # Keep track of the image dtype to return the same dtype
+    image_dtype = image.dtype
+    h, w = image.shape[:2]
+    image_max = max(h, w)
+    # Scale up, not down
+    scale = max(1, min_dim / min(h, w))
+    # Check if enlarging the max dim by scale would exceed our limit
+    if round(image_max * scale) > max_dim:
+        # If that's the case, bound the scale to the ratio between max dim and the image max
+        scale = max_dim / image_max
+    # Resize image using bilinear interpolation
+    if scale != 1:
+        image = resize(image, output_shape=(round(h * scale), round(w * scale)),
+                       order=1, mode='constant', cval=0, clip=True,
+                       anti_aliasing=False, anti_aliasing_sigma=False,
+                       preserve_range=True)
+    # Get new height and width:
+    h, w = image.shape[:2]
+    top_pad = (max_dim - h) // 2
+    bottom_pad = max_dim - h - top_pad
+    left_pad = (max_dim - w) // 2
+    right_pad = max_dim - w - left_pad
+    padding = [(top_pad, bottom_pad),
+               (left_pad, right_pad),
+               (0, 0)]
+    # Apply padding to the image
+    image = np.pad(image, padding, mode='constant', constant_values=0)
+    window = (top_pad, left_pad, h + top_pad, w + left_pad)
+    return image.astype(image_dtype), window, scale, padding
 
 def norm_boxes(boxes, shape):
     """Converts boxes from pixel coordinates to normalized coordinates.

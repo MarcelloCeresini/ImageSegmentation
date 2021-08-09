@@ -4,10 +4,6 @@ import re
 import datetime
 import os
 
-import matplotlib.pyplot as plt
-import matplotlib.image as mpimg
-from matplotlib.patches import Rectangle
-
 import tensorflow as tf
 from tensorflow import keras
 # Refer to TF's internal version of Keras for more stability
@@ -15,8 +11,6 @@ import tensorflow.keras.layers as KL
 import tensorflow.keras.models as KM
 import tensorflow.keras.backend as K
 import tensorflow.keras.losses as KLS
-
-from skimage.transform import resize
 
 from config import ModelConfig
 import utils_functions as utils
@@ -246,10 +240,10 @@ class RefinementLayer(KL.Layer):
     - Refined proposals in normalized coordinates [batch, rois, (y1, x1, y2, x2)]
     """
 
-    def __init__(self, proposal_count, nms_threshold, **kwargs):
+    def __init__(self, proposal_count, config:ModelConfig, **kwargs):
         super(RefinementLayer, self).__init__(**kwargs)
         self.proposal_count = proposal_count
-        self.nms_threshold = nms_threshold
+        self.config = config
 
     def call(self, inputs, **kwargs):
         """
@@ -316,7 +310,7 @@ class RefinementLayer(KL.Layer):
                                                 tf.expand_dims(boxes, 2),
                                                 tf.expand_dims(scores,2),
                                                 self.proposal_count, self.proposal_count,
-                                                self.nms_threshold)
+                                                self.config.RPN_NMS_THRESHOLD)
         # The original code adds padding to these tensors, in case the self.proposal_count
         # requirement is not respected, but this is only required when dealing with very 
         # small images. I think we are fine without it, for now.
@@ -603,19 +597,24 @@ class RPN():
     This class encapsulates the RPN model and some of its functionalities.
     The Keras model is contained in the model property.
     """
-    def __init__(self, mode:str, config:ModelConfig, out_dir:str):
+    def __init__(self, mode:str, config:ModelConfig, out_dir:str=None):
         """
         Inputs: 
         - mode: One of ["training", "inference"]
         - config: The model configuration object (ModelConfig object)
-        - out_dir: Directory to save training logs and trained weights
+        - out_dir (optional): Directory to save training logs and trained weights
         """
         assert mode in ['training', 'inference']
         self.mode = mode
         self.config = config
         self.out_dir = out_dir
-        self.set_log_dir()
-        self.model = self.build()
+        if mode == 'training':
+            self.set_log_dir()
+        # Instantiate self.model:
+        self.build()
+
+    def summary(self):
+        print(self.model.summary())
 
     def set_log_dir(self, model_path=None):
         """Sets the model log directory and epoch counter.
@@ -788,7 +787,7 @@ class RPN():
             # Basically, we need a layer that yields a tensor containing the anchors
             # TODO: Why not doing it with tensorflow directly?
             anchors = KL.Lambda(lambda x: tf.Variable(anchors), name='anchors')(input_image)
-        elif self.mode == 'evaluation':
+        elif self.mode == 'inference':
             # In testing mode, anchors are given as input to the network
             anchors = input_anchors
 
@@ -825,13 +824,13 @@ class RPN():
 
         # The output of the RPN must be transformed in actual proposals for the rest of
         # the network.
-        proposal_count = self.config.POST_NMS_ROIS_INFERENCE if self.mode == 'evaluation' \
+        proposal_count = self.config.POST_NMS_ROIS_INFERENCE if self.mode == 'inference' \
             else self.config.POST_NMS_ROIS_TRAINING
 
         # Call the RefinementLayer to do NMS of anchors and apply box deltas
         rpn_rois, rpn_classes = RefinementLayer(
             proposal_count=proposal_count,
-            nms_threshold=self.config.RPN_NMS_THRESHOLD,
+            config=self.config,
             name='ROI_refinement')([rpn_classes, rpn_deltas, anchors])
 
         if self.mode == 'training':
@@ -871,7 +870,7 @@ class RPN():
             outputs = [rpn_class_logits, rpn_classes, rpn_deltas,
                 rpn_rois, output_rois, rpn_class_loss, rpn_bbox_loss]
 
-        elif self.mode == 'evaluation':
+        elif self.mode == 'inference':
             inputs = [input_image, input_anchors]
             outputs = [rpn_classes, rpn_rois]
 
@@ -879,6 +878,45 @@ class RPN():
 
         # Finally, instantiate the Keras model
         self.model = KM.Model(inputs, outputs, name='rpn')
+
+    def detect(self, images):
+        '''
+        This function runs the detection pipeline.
+
+        Inputs: 
+        - images: a list of images, even of different sizes 
+            (they will be reshaped as zero-padded squares of the same dimensions)
+        - model: the model to run on the image (passed as input because it's easier
+            for testing)
+
+        Outputs:
+            - preprocessed_images: the preprocessed images in a batch
+            - anchors: the anchors for the image
+            - rpn_classes: the classes (fg/bg) predicted by the RPN and their probabilities
+            - rpn_boxes: the boxes predicted by the RPN
+        '''
+        preprocessed_images, windows = utils.preprocess_inputs(images, self.config)
+
+        # Check that all images in the batch now have the same size
+        image_shape = preprocessed_images[0].shape
+        for g in preprocessed_images[1:]:
+            assert g.shape == image_shape, \
+                "All images must have the same size after preprocessing"
+
+        # The network also receives anchors as inputs, so we need a function
+        # that returns the anchors
+        anchors = self.get_anchors(image_shape)
+
+        # The original matterport implementation comments the following action
+        # saying that Keras requires it. Basically, anchors are replicated among
+        # the batch dimension. In our case, batch size is simply one.
+        anchors = np.broadcast_to(anchors, (self.config.BATCH_SIZE,) + anchors.shape)
+
+        # Use the previously instantiated model to run prediction
+        rpn_classes, rpn_bboxes = self.model.predict([preprocessed_images, anchors])
+
+        # Return the preprocessed images, anchors, classifications and bounding boxes from the RPN
+        return preprocessed_images, rpn_classes, rpn_bboxes
 
 
     def get_anchors(self, image_shape):
