@@ -8,7 +8,7 @@ class ModelConfig():
     GPU_COUNT = 1 # TODO: Only 1 GPU is supported for now
 
     # Number of images to load on each GPU
-    IMAGES_PER_GPU = 1
+    IMAGES_PER_GPU = 2
 
     ### INPUT IMAGE RELATED CONSTANTS ###
 

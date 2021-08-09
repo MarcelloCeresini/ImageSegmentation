@@ -25,7 +25,7 @@ model = RPN('inference', config)
 print(model.summary())
 
 # Test the detection with two images
-img = np.stack([mpimg.imread('res/elephant.jpg')] * config.BATCH_SIZE)
+img = [mpimg.imread('res/006626.jpg'), mpimg.imread('res/007675.jpg')]
 mod_images, rpn_classes, rpn_bboxes = model.detect(img)
 
 print("Shape of rpn_classes: {}".format(tf.shape(rpn_classes)))
