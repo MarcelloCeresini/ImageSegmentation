@@ -1,21 +1,31 @@
+# TODO: ADD TRAINING CODE
+# TODO: Add the rest of Mask-RCNN
+# TODO: Fix some comments in functions (mostly add output shapes and stuff)
+# TODO: Possibly change the way some layers/functions work
+
 import math
 import numpy as np
 import re
 import datetime
 import os
+import errno
+import multiprocessing
 
 import tensorflow as tf
-from tensorflow import keras
 # Refer to TF's internal version of Keras for more stability
+from tensorflow import keras
 import tensorflow.keras.layers as KL
 import tensorflow.keras.models as KM
 import tensorflow.keras.backend as K
 import tensorflow.keras.losses as KLS
 
-from config import ModelConfig
+import config
 import utils_functions as utils
+from config import ModelConfig
+from data_generator import DataGenerator
 
 ### GENERAL ERROR CLASSES ###
+
 class BadImageSizeException(Exception):
     pass
 
@@ -27,11 +37,17 @@ class InvalidBackboneError(Exception):
 #######################
 
 def resnet_graph(input_image, backbone_type):
-    # Return the 5 shared convolutional layers
+    '''
+    Sends the input image through the ResNet backbone (101 or 50, depending
+    on the chosen backbone type).
+    The backbone is always initialized with imagenet-trained weights.
+    We return the 5 convolutional layers that are shared between the backbone
+    and the rest of the network (namely, the FPN).
+    '''
     if backbone_type == 'resnet101':
         model = tf.keras.applications.ResNet101(
             include_top=False,  # set to False to remove the classifier
-            weights='imagenet',
+            weights='imagenet', # auto-download imagenet-trained weights
             input_tensor=input_image,
             pooling=None,  # DON'T apply max pooling to last layer
         )
@@ -43,7 +59,7 @@ def resnet_graph(input_image, backbone_type):
     elif backbone_type == 'resnet50':
         model = tf.keras.applications.ResNet50(
             include_top=False,  # set to False to remove the classifier
-            weights='imagenet',
+            weights='imagenet', # auto-download imagenet-trained weights
             input_tensor=input_image,
             pooling=None,  # DON'T apply max pooling to last layer
         )
@@ -327,12 +343,13 @@ class DetectionTargetLayer(KL.Layer):
     """
     Takes a subset of RPN's proposals so that negative proposals don't overshadow 
     positive ones. Then, associates each proposals to either the background or a
-    target GT bounding box. Then, it prepares each of these selected proposals by
+    target GT bounding box. Finally, it prepares each of these selected proposals by
     generating box refinements (distance from the GT box), class_ids and object masks
-    (by taking them from the appropriate GT object). Proposals enriched with this information
-    will be used as training samples.
+    (by taking them from the appropriate GT object). 
+    Proposals enriched with this information will be used as training samples.
 
     For initialization, the ModelConfig object is required.
+    
     For calls:
 
     Inputs:
@@ -354,8 +371,8 @@ class DetectionTargetLayer(KL.Layer):
     If there are not enough proposals (eg. the proposals array is heavily zero-padded,
     the target ROIs can also be zero padded)
     """
-    def __init__(self, config:ModelConfig):
-        super(DetectionTargetLayer, self).__init__()
+    def __init__(self, config:ModelConfig, name):
+        super(DetectionTargetLayer, self).__init__(name=name)
         self.config = config
 
     def call(self, inputs):
@@ -410,7 +427,8 @@ class DetectionTargetLayer(KL.Layer):
         # Handle COCO crowds
         # A crowd box in COCO is a bounding box around several instances.
         # We exclude them from training. To recognize them, we check
-        # for negative class IDs, since that's what is assigned to crowds.
+        # for negative class IDs, since that's what is assigned to crowds
+        # (see the FoodDataset in food.py)
         # TODO: is this actually good given our dataset?
         crowd_ix = tf.where(gt_class_ids < 0)[:,0]
         non_crowd_ix = tf.where(gt_class_ids > 0)[:, 0]
@@ -470,7 +488,8 @@ class DetectionTargetLayer(KL.Layer):
         positive_count = int(self.config.TRAIN_ROIS_PER_IMAGE * self.config.ROI_POSITIVE_RATIO)
         positive_indices = tf.random.shuffle(positive_indices)[:positive_count]
         positive_count = tf.shape(positive_indices)[0]
-        # How many negatives do we need exactly? The ratio is 0.3 = positive/negative, so negative = 1/0.33 * positive
+        # How many negatives do we need exactly? 
+        # The ratio is 0.3 = positive/negative, so negative = 1/0.33 * positive
         negative_count = tf.cast(1.0 / self.config.ROI_POSITIVE_RATIO * tf.cast(positive_count, tf.float32), tf.int32)
         # To keep it 1:2:
         negative_count -= positive_count
@@ -526,6 +545,7 @@ class DetectionTargetLayer(KL.Layer):
         deltas = tf.stack([dy, dx, dh, dw], axis=1)
 
         # Again, the deltas get divided by the STDEV in Matterport's implementation.
+        # TODO: decide if it's a good idea
         # deltas /= config.BBOX_STD_DEV
 
         ## ASSOCIATE OBJECT MASKS TO PROPOSALS ##
@@ -616,6 +636,34 @@ class RPN():
     def summary(self):
         print(self.model.summary())
 
+    def find_last(self):
+        """Finds the last checkpoint file of the last trained model in the
+        model directory.
+        Returns:
+            The path of the last checkpoint file
+        """
+        # Get directory names. Each directory corresponds to a model
+        dir_names = sorted([x for x in os.listdir(self.out_dir) if 
+                        os.path.isdir(x) and 
+                        x.startswith('food')])
+        if not dir_names: # In case of empty list
+            raise FileNotFoundError(
+                errno.ENOENT,
+                "Could not find model directory under {}".format(self.out_dir))
+        # Pick last directory
+        dir_name = os.path.join(self.out_dir, dir_names[-1])
+        # Find the last checkpoint
+        checkpoints = sorted([x for x in os.listdir(dir_name) if 
+                                not os.path.isdir(x) and    # Must be a weight file
+                                x.startswith('rpn_food')])
+        # If there are no valid checkpoints:
+        if not checkpoints:
+            raise FileNotFoundError(
+                errno.ENOENT, "Could not find weight files in {}".format(dir_name))
+        
+        # Otherwise, return last checkpoint
+        return os.path.join(dir_name, checkpoints[-1])
+
     def set_log_dir(self, model_path=None):
         """Sets the model log directory and epoch counter.
 
@@ -632,7 +680,6 @@ class RPN():
         if model_path:
             # Continue from we left of. Get epoch and date from the file name
             # A sample model path might look like:
-            # TODO update names
             # \path\to\logs\food20211029T2315\rpn_food_0001.h5 (Windows)
             # /path/to/logs/food20211029T2315/rpn_food_0001.h5 (Linux)
             regex = r".*[/\\][\w-]+(\d{4})(\d{2})(\d{2})T(\d{2})(\d{2})[/\\]rpn\_food\_[\w-]+(\d{4})\.h5"
@@ -695,12 +742,16 @@ class RPN():
             # Zero-padded GT boxes in pixels
             # [batch, MAX_GT_INSTANCES, (y1,x1,y2,x2)] (in pixels)
             input_gt_boxes = KL.Input(
-                shape=[None], name='input_gt_boxes', dtype=tf.int32
+                shape=[None], name='input_gt_boxes', dtype=tf.float32
             )
             # Normalize input coordinates
-            gt_boxes = KL.Lambda(lambda x: norm_boxes_tf(
-                x, K.shape(input_image)[1:3])  # Ignore batch and other measures
-                                )(input_gt_boxes)
+            # Treating this with a Lambda layer makes the code crash, so we implemented a
+            # custom layer. The original code is below:
+            # gt_boxes = KL.Lambda(lambda x: norm_boxes_tf(
+            #    x, tf.shape(input_image)[1:3])(input_gt_boxes)
+            gt_boxes = NormBoxesLayer(name="norm_gt_boxes")([
+                input_gt_boxes, K.shape(input_image)[1:3] # Ignore batch and other measures
+            ])
 
             # Groundtruth masks in zero-padded pixels
             # [batch, height, width, MAX_GT_INSTANCES]
@@ -786,7 +837,7 @@ class RPN():
             # the values of this tensor.
             # Basically, we need a layer that yields a tensor containing the anchors
             # TODO: Why not doing it with tensorflow directly?
-            anchors = KL.Lambda(lambda x: tf.Variable(anchors), name='anchors')(input_image)
+            anchors = tf.Variable(anchors)
         elif self.mode == 'inference':
             # In testing mode, anchors are given as input to the network
             anchors = input_anchors
@@ -847,7 +898,7 @@ class RPN():
             # earlier in the network. These target proposals represent the target output
             # of the RPN for the image.
             rois, target_class_ids, target_bbox, target_mask = \
-                DetectionTargetLayer(name="proposal_targets")([
+                DetectionTargetLayer(self.config, name="proposal_targets")([
                     rpn_rois, input_gt_class_ids, gt_boxes, input_gt_masks
                 ])
 
@@ -874,7 +925,7 @@ class RPN():
             inputs = [input_image, input_anchors]
             outputs = [rpn_classes, rpn_rois]
 
-        # TODO: Add the classification and regression heads.
+        # TODO: Add MaskRCNN's classification and regression heads.
 
         # Finally, instantiate the Keras model
         self.model = KM.Model(inputs, outputs, name='rpn')
@@ -942,26 +993,198 @@ class RPN():
         if not tuple(image_shape) in self._anchor_cache:
             # If we have not calculated the anchor coordinates for an image with the same shape,
             # do and save them
-            anchors = []
-            # The next function generates anchors at the different levels of the FPN.
-            # Each scale is bound to a different level of the pyramid
-            # On the other hand, all ratios of the proposals are used in all levels.
-            for i in range(len(self.config.RPN_ANCHOR_SCALES)):
-                anchors.append(utils.generate_anchors(  self.config.RPN_ANCHOR_SCALES[i],   # Use only the appropriate scale for the level
-                                                        self.config.RPN_ANCHOR_RATIOS,      # Use all ratios for the BBs
-                                                        backbone_shapes[i],                 # At this level, the image has this shape...
-                                                        self.config.BACKBONE_STRIDES[i],    # Or better, is scaled of this quantity
-                                                        self.config.RPN_ANCHOR_STRIDE       # Frequency of sampling in the feature map
-                                                                                            # for the generation of anchors
-                                                        ))
-            # Transform the list in an array [N, (y1,x1,y2,x2)] which contains all generated anchors
-            # The sorting of the scale is bound to the scaling of the feature maps,
-            # So first we have all anchors at scale 1/4, then all anchors at scale 1/8 and so on...
-            anchors = np.concatenate(anchors, axis=0)
+            anchors = utils.generate_pyramid_anchors(
+                self.config.RPN_ANCHOR_SCALES,
+                self.config.RPN_ANCHOR_RATIOS,
+                backbone_shapes,
+                self.config.BACKBONE_STRIDES,
+                self.config.RPN_ANCHOR_STRIDE)
             # Normalize anchors coordinates
             anchors = utils.norm_boxes(anchors, image_shape[:2])
             self._anchor_cache[tuple(image_shape)] = anchors
         return self._anchor_cache[tuple(image_shape)]
+
+
+    def compile(self, learning_rate, momentum):
+        '''
+        Compile the model for training. This means setting the optimizer,
+        the losses, regularization and others so that we have a train-ready model.
+        '''
+        # Optimizer
+        # We choose classic SGD as an optimizer.
+        optimizer = keras.optimizers.SGD(
+            learning_rate=learning_rate,
+            momentum=momentum,
+            clipnorm=self.config.GRADIENT_CLIP_NORM
+        )
+
+        # TODO: does it really need to be so complicated?
+
+        # Add losses
+        self.model._losses = [] # Clear losses
+        loss_names = ["rpn_class_loss",  "rpn_bbox_loss"]
+        for name in loss_names:
+            # Retrieve the loss layer from the model
+            layer = self.model.get_layer(name)
+            # If already present (shouldn't be) continue
+            if layer.output in self.model.losses:
+                continue
+            # Apply mean within the batch
+            loss = tf.reduce_mean(layer.output, keepdims=True)
+            # Add loss
+            self.model.add_loss(loss)
+        
+        # Add L2 Regularization
+        # Skip gamma and beta weights of batch normalization layers.
+        reg_losses = [
+            keras.regularizers.l2(self.config.WEIGHT_DECAY)(w) / tf.cast(tf.size(w), tf.float32)
+            for w in self.model.trainable_weights
+            if 'gamma' not in w.name and 'beta' not in w.name]
+        self.model.add_loss(tf.add_n(reg_losses))
+
+        # Compile the model
+        self.model.compile(
+            optimizer=optimizer,
+            loss=[None] * len(self.model.outputs)
+        )
+
+        # Add metrics for losses
+        for name in loss_names:
+            if name in self.model.metrics_names:
+                continue
+            layer = self.model.get_layer(name)
+            self.model.metrics_names.append(name)
+            loss = tf.reduce_mean(layer.output, keepdims=True)
+            self.model.metrics.append(loss)
+
+    
+    def set_trainable(self, layer_regex, indent=0, verbose=1):
+        """Sets model layers as trainable if their names match
+        the given regular expression.
+        """
+        layers = self.model.layers
+        print("Selecting trainable layers in model")
+        for layer in layers:
+            # Is the layer a model?
+            if layer.__class__.__name__ == 'Model':
+                print("In model: ", layer.name)
+                # Recursive call
+                self.set_trainable(
+                    layer, layer_regex, indent=indent + 4)
+                continue
+
+            # Does the layer have weights at all?
+            if not layer.weights:
+                continue
+
+            # Is the layer trainable?
+            trainable = bool(re.fullmatch(layer_regex, layer.name))
+            # Update layer. If layer is a container, update inner layer.
+            if layer.__class__.__name__ == 'TimeDistributed':
+                layer.layer.trainable = trainable
+            else:
+                layer.trainable = trainable
+            # Print trainable layer names
+            if trainable and verbose > 0:
+                print("{}{:20}   ({})".format(" " * indent, layer.name,
+                                            layer.__class__.__name__))
+
+
+    def train(self, train_dataset, val_dataset, 
+                    learning_rate, epochs, layers, augmentation=None, 
+                    custom_callbacks=None):
+        """Train the model.
+        train_dataset, val_dataset: Training and validation datasets.
+        learning_rate: The learning rate to train with
+        epochs: Number of training epochs. Note that previous training epochs
+                are considered to be done already, so this actually determines
+                the epochs to train in total rather than in this particaular
+                call.
+        layers: Allows selecting which layers to train. It can be:
+            - A regular expression to match layer names to train
+            - One of these predefined values:
+            heads: Only the RPN and FPN (#TODO: When the rest of the model is added, 
+                                        this should train also the other heads)
+            all: All the layers
+            3+: Train Resnet stage 3 and up
+            4+: Train Resnet stage 4 and up
+            5+: Train Resnet stage 5 and up
+        augmentation: Optional. An imgaug (https://github.com/aleju/imgaug)
+            augmentation. For example, passing imgaug.augmenters.Fliplr(0.5)
+            flips images right/left 50% of the time. You can pass complex
+            augmentations as well. This augmentation applies 50% of the
+            time, and when it does it flips images right/left half the time
+            and adds a Gaussian blur with a random sigma in range 0 to 5.
+
+                augmentation = imgaug.augmenters.Sometimes(0.5, [
+                    imgaug.augmenters.Fliplr(0.5),
+                    imgaug.augmenters.GaussianBlur(sigma=(0.0, 5.0))
+                ])
+
+        custom_callbacks: Optional. Add custom callbacks to be called
+            with the keras fit_generator method. Must be list of type keras.callbacks.
+        """
+        assert self.mode == "training", "Create model in training mode."
+
+        # Select the layers to train using some regex
+        layer_regex = {
+            # all layers but the backbone
+            "heads": r"(rpn\_.*)|(fpn\_.*)",
+            # From a specific Resnet stage and up
+            "3+": r"(conv3\_.*)|(conv4\_.*)|(conv5\_.*)|(rpn\_.*)|(fpn\_.*)",
+            "4+": r"(conv4\_.*)|(conv5\_.*)|(rpn\_.*)|(fpn\_.*)",
+            "5+": r"(conv5\_.*)|(rpn\_.*)|(fpn\_.*)",
+            # All layers
+            "all": ".*",
+        }
+        if layers in layer_regex.keys():
+            layers = layer_regex[layers]
+
+        # Data generators
+        train_generator = DataGenerator(train_dataset, self.config, shuffle=True,
+                                        augmentation=augmentation)
+        val_generator = DataGenerator(val_dataset, self.config, shuffle=True)
+
+        # Create log_dir if it does not exist
+        os.makedirs(self.log_dir, exist_ok=True)
+
+        # Callbacks
+        # TODO: Should we add other callbacks?
+        callbacks = [
+            keras.callbacks.TensorBoard(log_dir=self.log_dir,
+                                        histogram_freq=0, write_graph=True, write_images=False),
+            keras.callbacks.ModelCheckpoint(self.checkpoint_path,
+                                            verbose=0, save_weights_only=True),
+        ]
+
+        # Train
+        print("\nStarting at epoch {}. LR={}\n".format(self.epoch, learning_rate))
+        print("Checkpoint Path: {}".format(self.checkpoint_path))
+        self.set_trainable(layers)
+        self.compile(learning_rate, self.config.LEARNING_MOMENTUM)
+
+        # TODO: It's no harm, but check this out
+        # Work-around for Windows: Keras fails on Windows when using
+        # multiprocessing workers. See discussion here:
+        # https://github.com/matterport/Mask_RCNN/issues/13#issuecomment-353124009
+        if os.name is 'nt':
+            workers = 0
+        else:
+            workers = multiprocessing.cpu_count()
+
+        self.model.fit_generator(
+            train_generator,
+            initial_epoch=self.epoch,
+            epochs=epochs,
+            steps_per_epoch=self.config.STEPS_PER_EPOCH,
+            callbacks=callbacks,
+            validation_data=val_generator,
+            validation_steps=self.config.VALIDATION_STEPS,
+            max_queue_size=100,
+            workers=workers,
+            use_multiprocessing=True,
+        )
+        self.epoch = max(self.epoch, epochs)
 
 ####################
 ### MODEL LOSSES ###
@@ -1044,29 +1267,20 @@ def rpn_box_regression_loss_graph(target_deltas, rpn_match, rpn_bbox):
 ### MODEL-RELATED UTILS FUNCTIONS ###
 #####################################
 
-@tf.function
-def norm_boxes_tf(boxes, shape):
+class NormBoxesLayer(KL.Layer):
     '''
-    Same as the function in utils_functions with the same name, 
-    but using tensorflow to deal with tensors
+    Custom layer applying normalization to input GT bounding boxes
     '''
-    shape = tf.cast(shape, tf.float32)  # Cast the shapes of the image to float32
-    h, w = tf.split(shape, 2)  # Split in two sub-tensors
-    scale = tf.concat([h, w, h, w], axis=-1) - tf.constant(1.0)  # Concatenate h and w and reduce them all by 1
-    shift = tf.constant([0., 0., 1., 1.])
-    return tf.divide(boxes - shift, scale)
+    def __init__(self, name, **kwargs):
+        super(NormBoxesLayer, self).__init__(name=name, **kwargs)
+    
+    def call(self, inputs, **kwargs):
+        boxes, shape = inputs[0], inputs[1]
+        h, w = tf.split(tf.cast(shape, tf.float32), 2)  # Split in two sub-tensors
+        scale = tf.concat([h, w, h, w], axis=-1) - tf.constant(1.0)  # Concatenate h and w and reduce them all by 1
+        shift = tf.constant([0., 0., 1., 1.])
+        return (boxes - shift) / scale
 
-@tf.function
-def denorm_boxes_tf(boxes, shape):
-    '''
-    Same as the function in utils_functions with the same name, 
-    but using tensorflow operation to deal with tensors
-    '''
-    shape = tf.cast(shape, tf.float32)  # Cast the shapes of the image to float32
-    h, w = tf.split(shape, 2)  # Split in two sub-tensors
-    scale = tf.concat([h, w, h, w], axis=-1) - tf.constant(1.0)  # Concatenate h and w and reduce them all by 1
-    shift = tf.constant([0., 0., 1., 1.])
-    return tf.cast(tf.round(tf.multiply(boxes, scale) + shift), tf.int32)  # Cast back into pixels
 
 @tf.function
 def trim_zeros_tf(boxes, name='trim_zeros'):
@@ -1138,3 +1352,28 @@ def calculate_overlaps_matrix_tf(boxes1, boxes2):
     # 5. Reshape as a NxN matrix.
     overlaps = tf.reshape(iou, [tf.shape(boxes1)[0], tf.shape(boxes2)[0]])
     return overlaps
+
+#####################
+##  CODE CEMETERY  ##
+#####################
+
+def norm_boxes_tf(boxes, shape):
+    '''
+    Same as the function in utils_functions with the same name, 
+    but using tensorflow to deal with tensors
+    '''
+    h, w = tf.split(tf.cast(shape, tf.float32), 2)  # Split in two sub-tensors
+    scale = tf.concat([h, w, h, w], axis=-1) - tf.constant(1.0)  # Concatenate h and w and reduce them all by 1
+    shift = tf.constant([0., 0., 1., 1.])
+    return (boxes - shift) / scale
+
+def denorm_boxes_tf(boxes, shape):
+    '''
+    Same as the function in utils_functions with the same name, 
+    but using tensorflow operation to deal with tensors
+    '''
+    shape = tf.cast(shape, tf.float32)  # Cast the shapes of the image to float32
+    h, w = tf.split(shape, 2)  # Split in two sub-tensors
+    scale = tf.concat([h, w, h, w], axis=-1) - tf.constant(1.0)  # Concatenate h and w and reduce them all by 1
+    shift = tf.constant([0., 0., 1., 1.])
+    return tf.cast(tf.round(tf.multiply(boxes, scale) + shift), tf.int32)  # Cast back into pixels
