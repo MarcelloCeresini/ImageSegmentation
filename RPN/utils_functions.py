@@ -1,8 +1,34 @@
+import scipy
 import numpy as np
-
 from skimage.transform import resize
 
 from config import ModelConfig
+
+def generate_pyramid_anchors(scales, ratios, feature_shapes, 
+                            feature_strides, anchor_stride):
+    ''' 
+    This function generates anchors at the different levels of the FPN.
+    Each scale is bound to a different level of the pyramid
+    On the other hand, all ratios of the proposals are used in all levels.
+
+    Returns:
+    - anchors: [N, (y1,x1,y2,x2)], an array of all generated anchors.
+        Anchors are sorted by scale size.
+    '''
+    anchors = []
+    for i in range(len(scales)):
+        anchors.append(generate_anchors(
+            scales[i],              # Use only the appropriate scale for the level
+            ratios,                 # Use all ratios for the BBs
+            feature_shapes[i],      # At this level, the image has this shape...
+            feature_strides[i],     # Or better, is scaled of this quantity
+            anchor_stride           # Frequency of sampling in the feature map
+                                    # for the generation of anchors
+        ))
+    # Transform the list in an array [N, (y1,x1,y2,x2)] which contains all generated anchors
+    # The sorting of the scale is bound to the scaling of the feature maps,
+    # So first we have all anchors at scale 1/4, then all anchors at scale 1/8 and so on...
+    return np.concatenate(anchors, axis=0)
 
 def generate_anchors(scales, ratios, shape, feature_stride, anchor_stride):
     """
@@ -150,6 +176,23 @@ def resize_image(image, min_dim, max_dim):
     window = (top_pad, left_pad, h + top_pad, w + left_pad)
     return image.astype(image_dtype), window, scale, padding
 
+def resize_mask(mask, scale, padding, crop=None):
+    """Resizes a mask using the given scale and padding.
+    Typically, you get the scale and padding from resize_image() to
+    ensure both, the image and the mask, are resized consistently.
+
+    scale: mask scaling factor
+    padding: Padding to add to the mask in the form
+            [(top, bottom), (left, right), (0, 0)]
+    """
+    mask = scipy.ndimage.zoom(mask, zoom=[scale, scale, 1], order=0)
+    if crop is not None:
+        y, x, h, w = crop
+        mask = mask[y:y + h, x:x + w]
+    else:
+        mask = np.pad(mask, padding, mode='constant', constant_values=0)
+    return mask
+
 def norm_boxes(boxes, shape):
     """Converts boxes from pixel coordinates to normalized coordinates.
     
@@ -192,17 +235,82 @@ def denorm_boxes(boxes, shape):
     shift = np.array([0, 0, 1, 1])
     return np.around((boxes * scale) + shift).astype(np.int32)
 
+def extract_bboxes(mask):
+    """Compute bounding boxes from masks.
+    mask: [height, width, num_instances]. Mask pixels are either 1 or 0.
+
+    Returns: bbox array [num_instances, (y1, x1, y2, x2)].
+    """
+    boxes = np.zeros([mask.shape[-1], 4], dtype=np.int32)
+    for i in range(mask.shape[-1]):
+        m = mask[:, :, i]
+        # Bounding box.
+        horizontal_indicies = np.where(np.any(m, axis=0))[0]
+        vertical_indicies = np.where(np.any(m, axis=1))[0]
+        if horizontal_indicies.shape[0]:
+            x1, x2 = horizontal_indicies[[0, -1]]
+            y1, y2 = vertical_indicies[[0, -1]]
+            # x2 and y2 should not be part of the box. Increment by 1.
+            x2 += 1
+            y2 += 1
+        else:
+            # No mask for this instance. Might happen due to
+            # resizing or cropping. Set bbox to zeros
+            x1, x2, y1, y2 = 0, 0, 0, 0
+        boxes[i] = np.array([y1, x1, y2, x2])
+    return boxes.astype(np.int32)
+
+def normalize_image(images, mean_pixel):
+    '''
+    Takes an image (numpy matrix) in the format read from file and prepares
+    it for the neural network by subtracting the mean pixel and converting it
+    to float (normalization)
+
+    image: an array of images in RGB format
+    
+    Returns a float image that is normalized with respect to the mean pixel.
+    '''
+    return images.astype(np.float32) - mean_pixel
+
 def denormalize_image(image, mean_pixel):
     '''
     Takes an image (numpy matrix) in the format expected by the neural network
     (normalized) and transform them back into classical pixel images.
 
-    images: a list of image matrices with different sizes. What is constant
-        is the third dimension of the image matrix, the depth (usually 3)
+    image: an image matrix, with depth 3
     
     Returns an image (numpy matrix) containing the restored image images ([h, w, 3]).
     '''
     return np.asarray(image + mean_pixel, dtype=np.uint8)
+
+def compute_overlaps(boxes1, boxes2):
+    """
+    Computes IoU overlaps between two sets of boxes.
+    boxes1, boxes2: [N, (y1, x1, y2, x2)].
+
+    For better performance, pass the largest set first and the smaller second.
+    """
+    # Areas of anchors and GT boxes
+    area1 = (boxes1[:, 2] - boxes1[:, 0]) * (boxes1[:, 3] - boxes1[:, 1])
+    area2 = (boxes2[:, 2] - boxes2[:, 0]) * (boxes2[:, 3] - boxes2[:, 1])
+
+    # Compute overlaps to generate matrix [boxes1 count, boxes2 count]
+    # Each cell contains the IoU value.
+
+    # Prepare matrix
+    inters = np.zeros((boxes1.shape[0], boxes2.shape[0]))
+    # Iterate over boxes in second set
+    for i in range(boxes2.shape[0]):
+        y1 = np.maximum(boxes2[i, 0], boxes1[:, 0])
+        y2 = np.minimum(boxes2[i, 2], boxes1[:, 2])
+        x1 = np.maximum(boxes2[i, 1], boxes1[:, 1])
+        x2 = np.minimum(boxes2[i, 3], boxes1[:, 3])
+        intersections = np.maximum(x2 - x1, 0) * np.maximum(y2 - y1, 0)
+        unions = area2[i] + area1[:] - intersections[:]
+        iou = intersections / unions
+        # Fill the column that corresponds to box1
+        inters[:, i] = iou
+    return inters
 
 def log(text:str, array:np.array=None):
     """Prints a text message. And, optionally, if a Numpy array is provided it
@@ -217,4 +325,3 @@ def log(text:str, array:np.array=None):
             text += ("min: {:10}  max: {:10}".format("",""))
         text += "  {}".format(array.dtype)
     print(text)
-
