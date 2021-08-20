@@ -128,8 +128,8 @@ class ModelConfig():
     GRADIENT_CLIP_NORM = 5.0
 
     # Number of classes in the dataset:
-    NUM_CLASSES = 1+273 # TODO: I don't remember if that's correct, check it out
-                        # Also, TODO: remove some of the classes
+    NUM_CLASSES = 1+273 # 273 food classes + background
+                        # TODO: remove some of the classes
 
     # Train or freeze batch normalization layers
     #     None: Train BN layers. This is the normal mode
