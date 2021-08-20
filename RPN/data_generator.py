@@ -35,7 +35,7 @@ class DataGenerator(keras.utils.Sequence):
         and masks.
     '''
     def __init__(self, dataset, config, 
-                        shuffle=True, augmentations=None, 
+                        shuffle=True, augmentation=None, 
                         detection_targets=False):
         '''
         Inputs:
@@ -53,7 +53,7 @@ class DataGenerator(keras.utils.Sequence):
         self.dataset = dataset
         self.config = config
         self.shuffle = shuffle
-        self.augmentations = augmentations
+        self.augmentation = augmentation
         self.detection_targets = detection_targets
         
         self.image_ids = np.copy(dataset.image_ids)
@@ -173,7 +173,7 @@ class DataGenerator(keras.utils.Sequence):
         )
         mask = utils.resize_mask(mask, scale, padding, crop)
 
-        if self.augmentations:
+        if self.augmentation:
             # Augmenters that are safe to apply to masks
             # Some, such as Affine, have settings that make them unsafe, so always
             # test your augmentation on masks
@@ -189,7 +189,7 @@ class DataGenerator(keras.utils.Sequence):
             image_shape = image.shape
             mask_shape = mask.shape
             # Make augmenters deterministic to apply similarly to images and masks
-            det = self.augmentations.to_deterministic()
+            det = self.augmentation.to_deterministic()
             image = det.augment_image(image)
             # Change mask to np.uint8 because imgaug doesn't support np.bool
             mask = det.augment_image(mask.astype(np.uint8),

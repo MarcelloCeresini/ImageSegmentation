@@ -539,8 +539,8 @@ class DetectionTargetLayer(KL.Layer):
         # in the usual way, like box refinements are calculated
         dy = (gt_center_y - center_y) / height
         dx = (gt_center_x - center_x) / width
-        dh = tf.log(gt_height / height)
-        dw = tf.log(gt_width / width)
+        dh = tf.math.log(gt_height / height)
+        dw = tf.math.log(gt_width / width)
 
         deltas = tf.stack([dy, dx, dh, dw], axis=1)
 
@@ -550,6 +550,7 @@ class DetectionTargetLayer(KL.Layer):
 
         ## ASSOCIATE OBJECT MASKS TO PROPOSALS ##
 
+        tf.print(tf.shape(gt_masks))
         # Masks are currently in a [height, width, N] tensor.
         # Transpose masks to [N, height, width] and add a dimension at the end ([N, height, width, 1])
         transposed_masks = tf.expand_dims(tf.transpose(gt_masks, [2, 0, 1]), -1)
@@ -591,8 +592,8 @@ class DetectionTargetLayer(KL.Layer):
         roi_gt_boxes = tf.pad(roi_gt_boxes, [(0, N+P), (0,0)]) # Negative ROIs are not included in GT
                                                                # boxes of course, so we need to pad also for them
         roi_gt_class_ids = tf.pad(roi_gt_class_ids, [(0, N+P)]) # This is a one dimensional tensor
-        deltas = tf.pad(deltas, [(0,N+P),(0,0)]) # Deltas and masks of BG ROIs should not be included and be
-        masks = tf.pad(deltas, [(0,N+P), (0,0)]) # padded.
+        deltas = tf.pad(deltas, [(0,N+P),(0,0)])            # Deltas and masks of BG ROIs should not be included and be
+        masks = tf.pad(masks, [[0, N + P], (0, 0), (0, 0)]) # padded
 
         return rois, roi_gt_class_ids, deltas, masks
 
@@ -632,9 +633,11 @@ class RPN():
             self.set_log_dir()
         # Instantiate self.model:
         self.build()
+        self.summary()
 
     def summary(self):
         print(self.model.summary())
+
 
     def find_last(self):
         """Finds the last checkpoint file of the last trained model in the
@@ -664,6 +667,7 @@ class RPN():
         # Otherwise, return last checkpoint
         return os.path.join(dir_name, checkpoints[-1])
 
+
     def set_log_dir(self, model_path=None):
         """Sets the model log directory and epoch counter.
 
@@ -673,7 +677,7 @@ class RPN():
             name.
         """
         # Set date and epoch counter as if starting a new model
-        epoch = 0
+        self.epoch = 0
         now = datetime.datetime.now()
 
         # If we have a model path with date and epochs use them
@@ -689,8 +693,8 @@ class RPN():
                                         int(m.group(4)), int(m.group(5)))
                 # Epoch number in file is 1-based, and in Keras code it's 0-based.
                 # So, adjust for that then increment by one to start from the next epoch
-                epoch = int(m.group(6)) - 1 + 1
-                print('Re-starting from epoch %d' % epoch)
+                self.epoch = int(m.group(6)) - 1 + 1
+                print('Re-starting from epoch %d' % self.epoch)
 
         # Directory for training logs
         self.log_dir = os.path.join(self.out_dir, "{}{:%Y%m%dT%H%M}".format(
@@ -699,7 +703,8 @@ class RPN():
         # Path to save after each epoch. Include placeholders that get filled by Keras.
         self.checkpoint_path = os.path.join(self.log_dir, "rpn_food_*epoch*.h5")
         self.checkpoint_path = self.checkpoint_path.replace(
-            "*epoch*", "{epoch:04d}")
+            "*epoch*", "{self.epoch:04d}")
+
 
     def build(self):
         """
@@ -742,7 +747,7 @@ class RPN():
             # Zero-padded GT boxes in pixels
             # [batch, MAX_GT_INSTANCES, (y1,x1,y2,x2)] (in pixels)
             input_gt_boxes = KL.Input(
-                shape=[None], name='input_gt_boxes', dtype=tf.float32
+                shape=[None, 4], name='input_gt_boxes', dtype=tf.float32
             )
             # Normalize input coordinates
             # Treating this with a Lambda layer makes the code crash, so we implemented a
@@ -929,6 +934,7 @@ class RPN():
 
         # Finally, instantiate the Keras model
         self.model = KM.Model(inputs, outputs, name='rpn')
+
 
     def detect(self, images):
         '''
@@ -1143,7 +1149,8 @@ class RPN():
         # Data generators
         train_generator = DataGenerator(train_dataset, self.config, shuffle=True,
                                         augmentation=augmentation)
-        val_generator = DataGenerator(val_dataset, self.config, shuffle=True)
+        val_generator = DataGenerator(val_dataset, self.config, shuffle=True,
+                                        augmentation=augmentation)
 
         # Create log_dir if it does not exist
         os.makedirs(self.log_dir, exist_ok=True)
@@ -1190,6 +1197,7 @@ class RPN():
 ### MODEL LOSSES ###
 ####################
 
+@tf.function
 def rpn_class_loss_graph(rpn_match, rpn_class_logits):
     """
     Graph that calculates the RPN anchor classifier loss.
@@ -1221,6 +1229,7 @@ def rpn_class_loss_graph(rpn_match, rpn_class_logits):
     loss = K.switch(tf.size(loss) > 0, K.mean(loss), tf.constant(0.0))
     return loss
 
+@tf.function
 def rpn_box_regression_loss_graph(target_deltas, rpn_match, rpn_bbox):
     """
     Returns the RPN bounding box loss graph.
@@ -1245,11 +1254,10 @@ def rpn_box_regression_loss_graph(target_deltas, rpn_match, rpn_bbox):
     # For example, counts can be something like [25, 40, 32, 28] for a batch of 4 images.
     # 2. Then, take exactly the number of deltas that have been computed this way
     #    for each slice and concatenate them.
-    bbs = []
-    for i, l in enumerate(tf.unstack(target_deltas)):
-        bbs.append(tf.slice(l, [0,0], [counts[i], 4])) # Start from [0,0] and take the 
-                                                       # appropriate number of boxes.
-    target_deltas = tf.concat(bbs, axis=0)
+    bbs = tf.zeros([0, tf.shape(target_deltas)[2]])
+    for i in tf.range(tf.shape(target_deltas)[0]): # Iterate in the batch
+        tf.concat([bbs, tf.slice(target_deltas[i, :, :], [0,0], [counts[i], 4])], axis=0)   # Start from [0,0] and take the 
+                                                                                            # appropriate number of boxes.
 
     # We use the smooth l1 loss, which is more resistent to outliers with respect to
     # classic l1. In TensorFlow, this is implemented as "Huber loss".
@@ -1258,7 +1266,7 @@ def rpn_box_regression_loss_graph(target_deltas, rpn_match, rpn_bbox):
     # loss = 0.5 * d^2 + d * (|x| - d)  if |x| > d
     # Where d is an hyperparameter (default is 1).
     h = KLS.Huber()
-    loss = h(target_deltas, rpn_bbox)
+    loss = h(bbs, rpn_bbox)
     # As above, in case of empty loss tensor.
     loss = K.switch(tf.size(loss) > 0, K.mean(loss), tf.constant(0.0))
     return loss
@@ -1280,7 +1288,6 @@ class NormBoxesLayer(KL.Layer):
         scale = tf.concat([h, w, h, w], axis=-1) - tf.constant(1.0)  # Concatenate h and w and reduce them all by 1
         shift = tf.constant([0., 0., 1., 1.])
         return (boxes - shift) / scale
-
 
 @tf.function
 def trim_zeros_tf(boxes, name='trim_zeros'):

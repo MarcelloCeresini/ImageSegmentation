@@ -17,3 +17,6 @@ env
 
 ## TESTING AREAS ##
 testing
+
+## TRAINING LOGS ##
+logs
