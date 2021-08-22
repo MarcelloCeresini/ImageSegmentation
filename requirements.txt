@@ -1,5 +1,5 @@
-tensorflow
-tensorflow_datasets
+tensorflow==2.5.0
+tensorflow_datasets==4.4.0
 matplotlib
 scikit-image>=0.14
 ipykernel
