@@ -23,7 +23,7 @@ import shutil
 import argparse
 
 import numpy as np
-import skimage
+from skimage import io, color
 import imgaug  # For image augmentation
 
 from tensorflow import keras
@@ -109,10 +109,10 @@ class FoodDataset():
         Load the specified image and return it as a [H,W,3] numpy array.
         """
         # Load image
-        image = skimage.io.imread(self.image_info[image_id]['path'])
+        image = io.imread(self.image_info[image_id]['path'])
         # If grayscale. Convert to RGB for consistency.
         if image.ndim != 3:
-            image = skimage.color.gray2rgb(image)
+            image = color.gray2rgb(image)
         # If has an alpha channel, remove it for consistency
         if image.shape[-1] == 4:
             image = image[..., :3]
