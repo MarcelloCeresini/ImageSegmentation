@@ -550,7 +550,6 @@ class DetectionTargetLayer(KL.Layer):
 
         ## ASSOCIATE OBJECT MASKS TO PROPOSALS ##
 
-        tf.print(tf.shape(gt_masks))
         # Masks are currently in a [height, width, N] tensor.
         # Transpose masks to [N, height, width] and add a dimension at the end ([N, height, width, 1])
         transposed_masks = tf.expand_dims(tf.transpose(gt_masks, [2, 0, 1]), -1)
@@ -717,18 +716,14 @@ class RPN():
                                         "For example, use 256, 320, 384, 448, 512, ... etc. ")
 
         # Define inputs
-        # a. The input image
+        # The first input is of course the input image
         input_image = KL.Input(
             shape=self.config.IMAGE_SHAPE, name='input_image'
-        )
-        # b. The anchors in NORMALIZED coordinates
-        input_anchors = KL.Input(
-            shape=[None, 4], name='input_anchors'
         )
 
         # If we are training the network, we need the groundtruth rpn matches (1 or 0) 
         # and bounding boxes as well as the detections groundtruth 
-        # (class IDs, bounding boxes and masks) as additional inputs
+        # (class IDs, bounding boxes and masks)
         if self.mode == 'training':
             # RPN
             # TODO: What are these two inputs exactly?
@@ -844,8 +839,11 @@ class RPN():
             # TODO: Why not doing it with tensorflow directly?
             anchors = tf.Variable(anchors)
         elif self.mode == 'inference':
-            # In testing mode, anchors are given as input to the network
-            anchors = input_anchors
+            # In testing mode, anchors are given as input to the network,
+            # in NORMALIZED coordinates
+            anchors = KL.Input(
+                shape=[None, 4], name='input_anchors'
+            )
 
         ### RPN MODEL ###
         # The RPN is a lightweight neural network that scans the image 
@@ -909,8 +907,7 @@ class RPN():
 
             output_rois = tf.identity(rois, name="output_rois")
 
-            # Here we should add the network heads: the classifier and the mask graph.
-            # For now, this is a big TODO.
+            # TODO: Here we should add the network heads: the classifier and the mask graph.
 
             # RPN losses:
             # 1. Compute loss for the classification BG/FG.
@@ -918,7 +915,7 @@ class RPN():
                 [input_rpn_match, rpn_class_logits])
             # 2. Compute loss for the bounding box regression.
             rpn_bbox_loss = KL.Lambda(lambda x: rpn_box_regression_loss_graph(*x), name="rpn_bbox_loss")(
-                [input_rpn_bbox, input_rpn_match, rpn_deltas])
+                [self.config.BATCH_SIZE, input_rpn_bbox, input_rpn_match, rpn_deltas])
 
             # Model
             inputs = [input_image, input_rpn_match, input_rpn_bbox, input_gt_class_ids,
@@ -927,7 +924,7 @@ class RPN():
                 rpn_rois, output_rois, rpn_class_loss, rpn_bbox_loss]
 
         elif self.mode == 'inference':
-            inputs = [input_image, input_anchors]
+            inputs = [input_image, anchors]
             outputs = [rpn_classes, rpn_rois]
 
         # TODO: Add MaskRCNN's classification and regression heads.
@@ -1015,6 +1012,8 @@ class RPN():
         '''
         Compile the model for training. This means setting the optimizer,
         the losses, regularization and others so that we have a train-ready model.
+
+        # TODO: Documentation
         '''
         # Optimizer
         # We choose classic SGD as an optimizer.
@@ -1027,16 +1026,12 @@ class RPN():
         # TODO: does it really need to be so complicated?
 
         # Add losses
-        self.model._losses = [] # Clear losses
         loss_names = ["rpn_class_loss",  "rpn_bbox_loss"]
         for name in loss_names:
             # Retrieve the loss layer from the model
             layer = self.model.get_layer(name)
-            # If already present (shouldn't be) continue
-            if layer.output in self.model.losses:
-                continue
             # Apply mean within the batch
-            loss = tf.reduce_mean(layer.output, keepdims=True)
+            loss = tf.math.reduce_mean(layer.output, keepdims=True)
             # Add loss
             self.model.add_loss(loss)
         
@@ -1046,7 +1041,18 @@ class RPN():
             keras.regularizers.l2(self.config.WEIGHT_DECAY)(w) / tf.cast(tf.size(w), tf.float32)
             for w in self.model.trainable_weights
             if 'gamma' not in w.name and 'beta' not in w.name]
-        self.model.add_loss(tf.add_n(reg_losses))
+        # Note: from Keras's documentation:
+        '''
+        This method can also be called directly on a Functional Model during construction. 
+        In this case, any loss Tensors passed to this Model must be symbolic and be able 
+        to be traced back to the model's Inputs. 
+        (...)
+        If this is not the case for your loss (if, for example, 
+        your loss references a Variable of one of the model's layers), 
+        you can wrap your loss in a zero-argument lambda. 
+        These losses are not tracked as part of the model's topology since they can't be serialized.
+        '''
+        self.model.add_loss(lambda: tf.add_n(reg_losses))
 
         # Compile the model
         self.model.compile(
@@ -1164,6 +1170,9 @@ class RPN():
                                             verbose=0, save_weights_only=True),
         ]
 
+        if custom_callbacks is not None:
+            callbacks.extend(custom_callbacks)
+
         # Train
         print("\nStarting at epoch {}. LR={}\n".format(self.epoch, learning_rate))
         print("Checkpoint Path: {}".format(self.checkpoint_path))
@@ -1179,7 +1188,7 @@ class RPN():
         else:
             workers = multiprocessing.cpu_count()
 
-        self.model.fit_generator(
+        self.model.fit(
             train_generator,
             initial_epoch=self.epoch,
             epochs=epochs,
@@ -1213,6 +1222,7 @@ def rpn_class_loss_graph(rpn_match, rpn_class_logits):
     # Neutral proposals should not contribute to the loss.
 
     # Squeeze the last dimension of the rpn_match to make things simpler
+    # rpn_match becomes a [batch, anchors] tensor.
     rpn_match = tf.squeeze(rpn_match)
     # Select usable indices for the loss
     usable_indices = tf.where(K.not_equal(rpn_match, 0))
@@ -1229,12 +1239,15 @@ def rpn_class_loss_graph(rpn_match, rpn_class_logits):
     loss = K.switch(tf.size(loss) > 0, K.mean(loss), tf.constant(0.0))
     return loss
 
+
 @tf.function
-def rpn_box_regression_loss_graph(target_deltas, rpn_match, rpn_bbox):
+def rpn_box_regression_loss_graph(batch_size, target_deltas, rpn_match, rpn_bbox):
     """
     Returns the RPN bounding box loss graph.
 
     Inputs:
+    - batch_size: the batch size of the other tensors 
+        (note that this will be converted to a tensor)
     - target_deltas: [batch, max_positive_anchors, (dy, dx, log(dh), log(dw))].
         May be 0-padded in case some bbox deltas are unused.
     - rpn_match: [batch, anchors, 1]. Anchor match type. 1=positive,
@@ -1254,10 +1267,15 @@ def rpn_box_regression_loss_graph(target_deltas, rpn_match, rpn_bbox):
     # For example, counts can be something like [25, 40, 32, 28] for a batch of 4 images.
     # 2. Then, take exactly the number of deltas that have been computed this way
     #    for each slice and concatenate them.
-    bbs = tf.zeros([0, tf.shape(target_deltas)[2]])
-    for i in tf.range(tf.shape(target_deltas)[0]): # Iterate in the batch
-        tf.concat([bbs, tf.slice(target_deltas[i, :, :], [0,0], [counts[i], 4])], axis=0)   # Start from [0,0] and take the 
-                                                                                            # appropriate number of boxes.
+    bbs = tf.zeros([0, 4])
+    for i in tf.range(batch_size): # Iterate in the batch
+        # This is a workaround to be able to modify the bbs variable inside the loop
+        tf.autograph.experimental.set_loop_options(
+            shape_invariants=[(bbs, tf.TensorShape([None, 4]))]
+        )
+        bbs = tf.concat([bbs, tf.slice(target_deltas[i, :, :], 
+                                [0,0], [counts[i], 4])], axis=0)    # Start from [0,0] and take the 
+                                                                    # appropriate number of boxes.
 
     # We use the smooth l1 loss, which is more resistent to outliers with respect to
     # classic l1. In TensorFlow, this is implemented as "Huber loss".
