@@ -22,7 +22,7 @@ class DataGenerator(keras.utils.Sequence):
 
     - inputs list:
         - images: [batch, H, W, C]
-        - image_meta: [batch, (meta data)] Image details. See compose_image_meta()
+        - image_meta: [batch, shape] Original shapes for the image.
         - rpn_match: [batch, N] Integer (1=positive anchor, -1=negative, 0=neutral)
         - rpn_bbox: [batch, N, (dy, dx, log(dh), log(dw))] Anchor bbox deltas.
         - gt_class_ids: [batch, MAX_GT_INSTANCES] Integer class IDs
@@ -97,8 +97,7 @@ class DataGenerator(keras.utils.Sequence):
                 if b == 0:
                     # Init batch arrays. We are doing it here because we need some of the
                     # previously computed variables.
-                    batch_image_meta = np.zeros(
-                        (self.config.BATCH_SIZE,) + image_meta.shape, dtype=image_meta.dtype)
+                    batch_image_meta = np.zeros((self.config.BATCH_SIZE,) + image_meta)
                     batch_rpn_match = np.zeros(
                         [self.config.BATCH_SIZE, self.anchors.shape[0], 1], dtype=rpn_match.dtype)
                     batch_rpn_bbox = np.zeros(
@@ -128,7 +127,7 @@ class DataGenerator(keras.utils.Sequence):
                 batch_rpn_match[b] = rpn_match[:, np.newaxis]
                 batch_rpn_bbox[b] = rpn_bbox
                 # TODO: Why is subtracting the mean pixel so important?
-                batch_images[b] = utils.mold_image(image.astype(np.float32), self.config.MEAN_PIXEL)
+                batch_images[b] = utils.normalize_image(image.astype(np.float32), self.config.MEAN_PIXEL)
                 batch_gt_class_ids[b, :gt_class_ids.shape[0]] = gt_class_ids
                 batch_gt_boxes[b, :gt_boxes.shape[0]] = gt_boxes
                 batch_gt_masks[b, :, :, :gt_masks.shape[-1]] = gt_masks
@@ -142,8 +141,8 @@ class DataGenerator(keras.utils.Sequence):
                     raise
         
         # We have a full batch. It's time to return the generated data!
-        inputs = [batch_images, batch_image_meta, batch_rpn_match, batch_rpn_bbox,
-                          batch_gt_class_ids, batch_gt_boxes, batch_gt_masks]
+        inputs = [batch_images, batch_rpn_match, batch_rpn_bbox,
+                    batch_gt_class_ids, batch_gt_boxes, batch_gt_masks]
         outputs = [] # TODO: should anything really go here?
 
         return inputs, outputs
@@ -166,12 +165,12 @@ class DataGenerator(keras.utils.Sequence):
         image = self.dataset.load_image(id)
         mask, class_ids = self.dataset.load_mask(id)
         original_shape = image.shape
-        image, window, scale, padding, crop = utils.resize_image(
+        image, window, scale, padding = utils.resize_image(
             image,
             min_dim = self.config.IMAGE_MIN_DIM,
             max_dim = self.config.IMAGE_MAX_DIM
         )
-        mask = utils.resize_mask(mask, scale, padding, crop)
+        mask = utils.resize_mask(mask, scale, padding)
 
         if self.augmentation:
             # Augmenters that are safe to apply to masks
