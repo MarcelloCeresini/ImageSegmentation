@@ -773,7 +773,7 @@ class RPN():
             # gt_boxes = KL.Lambda(lambda x: norm_boxes_tf(
             #    x, tf.shape(input_image)[1:3])(input_gt_boxes)
             gt_boxes = NormBoxesLayer(name="norm_gt_boxes")([
-                input_gt_boxes, K.shape(input_image)[1:3] # Ignore batch and other measures
+                input_gt_boxes, input_image
             ])
 
             # Groundtruth masks in zero-padded pixels
@@ -1324,7 +1324,8 @@ class NormBoxesLayer(KL.Layer):
         super(NormBoxesLayer, self).__init__(name=name, **kwargs)
     
     def call(self, inputs, **kwargs):
-        boxes, shape = inputs[0], inputs[1]
+        boxes, image = inputs[0], inputs[1]
+        shape = tf.shape(image)[1:3] # Ignore batch and other measures
         h, w = tf.split(tf.cast(shape, tf.float32), 2)  # Split in two sub-tensors
         scale = tf.concat([h, w, h, w], axis=-1) - tf.constant(1.0)  # Concatenate h and w and reduce them all by 1
         shift = tf.constant([0., 0., 1., 1.])
