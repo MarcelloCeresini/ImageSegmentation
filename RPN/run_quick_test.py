@@ -26,8 +26,6 @@ if gpus:
 config = ModelConfig()
 model = RPN('inference', config)
 
-print(model.summary())
-
 # Create the DataLoader to test it.
 if os.path.exists(os.path.join('..','data')):
     # If we have the folder for the actual dataset (data, in the root folder), use it.

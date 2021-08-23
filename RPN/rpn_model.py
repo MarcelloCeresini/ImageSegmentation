@@ -261,6 +261,18 @@ class RefinementLayer(KL.Layer):
         self.proposal_count = proposal_count
         self.config = config
 
+    def get_config(self):
+        '''
+        To be able to save the model we need to update the configuration
+        for this custom layer by adding the parameters in init.
+        '''
+        config = super().get_config().copy()
+        config.update({
+            'proposal_count': self.proposal_count,
+            'config': self.config
+        })
+        return config
+
     def call(self, inputs, **kwargs):
         """
         Entry point for the layer call.
@@ -374,6 +386,17 @@ class DetectionTargetLayer(KL.Layer):
     def __init__(self, config:ModelConfig, name):
         super(DetectionTargetLayer, self).__init__(name=name)
         self.config = config
+
+    def get_config(self):
+        '''
+        To be able to save the model we need to update the configuration
+        for this custom layer by adding the parameters in init.
+        '''
+        config = super().get_config().copy()
+        config.update({
+            'config': self.config
+        })
+        return config
 
     def call(self, inputs):
         # We need to slice the batch and run a graph for each slice, because
