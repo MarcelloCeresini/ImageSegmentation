@@ -1,12 +1,16 @@
 import tensorflow as tf
 import numpy as np
+import os
 
 import matplotlib.pyplot as plt
 import matplotlib.image as mpimg
 from matplotlib.patches import Rectangle
 
-from config import ModelConfig
 from rpn_model import RPN
+from food import FoodDataset
+from config import ModelConfig
+from data_generator import DataGenerator
+
 import utils_functions as utils
 
 # GPU debugging
@@ -24,8 +28,20 @@ model = RPN('inference', config)
 
 print(model.summary())
 
-# Test the detection with two images
-img = [mpimg.imread('res/006626.jpg'), mpimg.imread('res/007675.jpg')]
+# Create the DataLoader to test it.
+if os.path.exists(os.path.join('..','data')):
+    # If we have the folder for the actual dataset (data, in the root folder), use it.
+    dataset_val = FoodDataset()
+    dataset_val.load_food('../data', 'val_subset')
+    dataset_val.prepare()
+    dataset_generator = DataGenerator(dataset_val, config, shuffle=True, 
+                            dont_normalize=True) # The network already does its preprocessing
+    data_iterator = dataset_generator.iterator
+    batch = next(data_iterator)
+    img = batch[0][0] # Images are already normalized because they are in validation format.
+else:
+    # Test the detection with two images in the res folder
+    img = [mpimg.imread('res/006626.jpg'), mpimg.imread('res/007675.jpg')]
 mod_images, rpn_classes, rpn_bboxes = model.detect(img)
 
 print("Shape of rpn_classes: {}".format(tf.shape(rpn_classes)))
