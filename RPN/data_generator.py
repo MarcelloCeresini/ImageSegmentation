@@ -80,7 +80,7 @@ class DataGenerator(keras.utils.Sequence):
         while b < self.config.BATCH_SIZE:
             try: 
                 # Get GT bounding box and masks for image
-                image_id = self.image_ids[index]
+                image_id = self.image_ids[index + b]
                 image, image_meta, gt_class_ids, gt_boxes, gt_masks = \
                     self.load_image_gts(image_id) 
 
@@ -172,7 +172,7 @@ class DataGenerator(keras.utils.Sequence):
         )
         mask = utils.resize_mask(mask, scale, padding)
 
-        if self.augmentation:
+        if self.augmentation is not None:
             # Augmenters that are safe to apply to masks
             # Some, such as Affine, have settings that make them unsafe, so always
             # test your augmentation on masks
@@ -198,17 +198,18 @@ class DataGenerator(keras.utils.Sequence):
             assert mask.shape == mask_shape, "Augmentation shouldn't change mask size"
             # Change mask back to bool
             mask = mask.astype(np.bool)
-            # Note that some boxes might be all zeros if the corresponding mask got cropped out.
-            # so we filter them out here
-            _idx = np.sum(mask, axis=(0, 1)) > 0
-            mask = mask[:, :, _idx]
-            class_ids = class_ids[_idx]
-            # Bounding boxes. Note that some boxes might be all zeros
-            # if the corresponding mask got cropped out.
-            # bbox: [num_instances, (y1, x1, y2, x2)]
-            bbox = utils.extract_bboxes(mask)
+            
+        # Note that some boxes might be all zeros if the corresponding mask got cropped out.
+        # so we filter them out here
+        _idx = np.sum(mask, axis=(0, 1)) > 0
+        mask = mask[:, :, _idx]
+        class_ids = class_ids[_idx]
+        # Bounding boxes. Note that some boxes might be all zeros
+        # if the corresponding mask got cropped out.
+        # bbox: [num_instances, (y1, x1, y2, x2)]
+        bbox = utils.extract_bboxes(mask)
 
-            return image, original_shape, class_ids, bbox, mask
+        return image, original_shape, class_ids, bbox, mask
 
     def build_rpn_targets(self, anchors, gt_class_ids, 
                             gt_boxes, config):
@@ -361,3 +362,7 @@ class DataGenerator(keras.utils.Sequence):
         '''
         # TODO: Multi GPU support?
         return int(np.floor(len(self.dataset.image_ids) / self.config.BATCH_SIZE))
+
+    @property
+    def iterator(self):
+        return self.__iter__()
