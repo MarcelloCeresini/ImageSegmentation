@@ -409,7 +409,7 @@ class DetectionTargetLayer(KL.Layer):
             inputs_slice = [x[i] for x in inputs]
             output_slice = self.detection_targets_graph(*inputs_slice)
             outputs.append(output_slice)
-        # Them, change from a list of slices containing outputs to
+        # Then, change from a list of slices containing outputs to
         # a list of outputs containing slices.
         # In other words, group together outputs by their significance rather than
         # their position in the batch
