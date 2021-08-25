@@ -332,7 +332,8 @@ class RefinementLayer(KL.Layer):
         boxes = apply_box_deltas_batched(pre_nms_anchors, deltas)
         # Clip to image boundaries (in normalized coordinates, clip in 0..1 range)
         window = np.array([0, 0, 1, 1], dtype=np.float32)
-        boxes = clip_boxes_batched(boxes, window)
+        ### Probably cllipping isn't needed, uncomment if needed
+        # boxes = clip_boxes_batched(boxes, window)
         # Apply non maximum suppression using tensorflow's implementation of a batched NMS
         nmsed_boxes, nmsed_scores, _, _ = tf.image.combined_non_max_suppression(
                                                 tf.expand_dims(boxes, 2),
