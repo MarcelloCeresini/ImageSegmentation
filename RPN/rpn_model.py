@@ -400,7 +400,7 @@ class DetectionTargetLayer(KL.Layer):
         return config
 
     def call(self, inputs):
-        # We need to slice the batch and run a graph for each slice, because
+        # We need to slice the batch and run a graph for each slice (image by image), because
         # the number of non-zero padded elements in tensors can be different
         # within the batch.
         out_names = ["rois", "target_class_ids", "target_bbox", "target_mask"]
@@ -1392,13 +1392,22 @@ def calculate_overlaps_matrix_tf(boxes1, boxes2):
     x2 = tf.minimum(b1_x2, b2_x2)
     # Calculate the area intersection. Notice that x2-x1 and y2-y1 can be negative
     # if there is no intersection.
-    intersection = tf.maximum(x2 - x1, 0) * tf.maximum(y2 - y1, 0)
+    ################################################################################
+    # intersection = tf.maximum(x2 - x1, 0) * tf.maximum(y2 - y1, 0)
+    # # 3. Compute unions
+    # b1_area = (b1_y2 - b1_y1) * (b1_x2 - b1_x1)
+    # b2_area = (b2_y2 - b2_y1) * (b2_x2 - b2_x1)
+    # union = b1_area + b2_area - intersection
+    # # 4. Compute IoU
+    # iou = intersection / union
+    ################################################################################
+    intersection = tf.maximum(tf.subtract(x2, x1), 0) * tf.maximum(tf.subtract(y2, y1), 0)
     # 3. Compute unions
-    b1_area = (b1_y2 - b1_y1) * (b1_x2 - b1_x1)
-    b2_area = (b2_y2 - b2_y1) * (b2_x2 - b2_x1)
-    union = b1_area + b2_area - intersection
+    b1_area = tf.multiply(tf.subtract(b1_y2, b1_y1), tf.subtract(b1_x2, b1_x1))
+    b2_area = tf.multiply(tf.subtract(b2_y2, b2_y1), tf.subtract(b2_x2, b2_x1))
+    union = tf.subtract(tf.add(b1_area, b2_area), intersection)
     # 4. Compute IoU
-    iou = intersection / union
+    iou = tf.divide(intersection, union)
     # 5. Reshape as a NxN matrix.
     overlaps = tf.reshape(iou, [tf.shape(boxes1)[0], tf.shape(boxes2)[0]])
     return overlaps
