@@ -526,12 +526,13 @@ class DetectionTargetLayer(KL.Layer):
 
         # Assign positive RoIs to GT boxes gathering results from the overlaps matrix
         positive_overlaps = tf.gather(overlaps, positive_indices)
+        # This gives a matrix with, for each positive_roi, all the IoU values with all the gt_boxes
         # Since there might be no GT boxes for the image and the overlaps matrix can be empty,
         # we check that positive_overlaps contains row that are longer than the empty tensor.
         roi_gt_box_assignment = tf.cond(
             tf.greater(tf.shape(positive_overlaps)[1], 0),
             # If the check succeeds, we the groundtruth box becomes the position of the element in the row
-            # that has the larger value
+            # that has the larger value, and this for each proposal
             true_fn = lambda: tf.argmax(positive_overlaps, axis=1),
             # Otherwise, we return an empty tensor.
             false_fn = lambda: tf.cast(tf.constant([]),tf.int64)
@@ -612,11 +613,12 @@ class DetectionTargetLayer(KL.Layer):
         rois = tf.pad(rois, [(0, P),(0, 0)]) # Add a padding of P elements on the right on the first dimension 
                                              # (the other dimension contains the coordinates and 
                                              # should not be changed)
-        roi_gt_boxes = tf.pad(roi_gt_boxes, [(0, N+P), (0,0)]) # Negative ROIs are not included in GT
-                                                               # boxes of course, so we need to pad also for them
+        # Negative ROIs are not included in GT boxes of course, so we need to pad also for them
+        # boxes are not needed if you have the deltas
+        # roi_gt_boxes = tf.pad(roi_gt_boxes, [(0, N+P), (0,0)]) 
         roi_gt_class_ids = tf.pad(roi_gt_class_ids, [(0, N+P)]) # This is a one dimensional tensor
-        deltas = tf.pad(deltas, [(0,N+P),(0,0)])            # Deltas and masks of BG ROIs should not be included and be
-        masks = tf.pad(masks, [[0, N + P], (0, 0), (0, 0)]) # padded
+        deltas = tf.pad(deltas, [(0,N+P),(0,0)])            # Deltas and masks of BG ROIs should not be included 
+        masks = tf.pad(masks, [[0, N + P], (0, 0), (0, 0)]) # and so need to be padded
 
         return rois, roi_gt_class_ids, deltas, masks
 
@@ -924,7 +926,7 @@ class RPN():
             # Generate some target proposals among the set of ROIs we have generated
             # earlier in the network. These target proposals represent the target output
             # of the RPN for the image.
-            rois, target_class_ids, target_bbox, target_mask = \
+            rois, target_class_ids, target_deltas, target_mask = \
                 DetectionTargetLayer(self.config, name="proposal_targets")([
                     rpn_rois, input_gt_class_ids, gt_boxes, input_gt_masks
                 ])
