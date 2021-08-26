@@ -655,7 +655,8 @@ class RPN():
         self.config = config
         self.out_dir = out_dir
         if mode == 'training':
-            self.set_log_dir()
+            self.set_log_dir() # we could add that it should be able to restart from a checkpoint? 
+            # sels.set_log_dir(out_dir) # or something similar?
         # Instantiate self.model:
         self.build()
         self.summary()
@@ -1255,7 +1256,7 @@ def rpn_class_loss_graph(rpn_match, rpn_class_logits):
     # Filter the usable rows for the loss
     rpn_class_logits = tf.gather_nd(rpn_class_logits, usable_indices)
     anchor_class = tf.gather_nd(rpn_match, usable_indices)
-    # Transform -1/1 in 0/1 for positive and negative in anchor_class
+    # Transform -1/1 in 0/1 for negative/positive in anchor_class
     anchor_class = K.cast(K.equal(anchor_class, 1), tf.int8) # Cast a boolean map into a int map (0/1)
     # Apply crossentropy loss. We use Keras's SparseCategoricalCrossentropy because labels
     # are not one-hot encoded. We let the function transform logits into a probability distribution.
