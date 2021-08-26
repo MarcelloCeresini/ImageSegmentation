@@ -19,7 +19,6 @@ import tensorflow.keras.models as KM
 import tensorflow.keras.backend as K
 import tensorflow.keras.losses as KLS
 
-import config
 import utils_functions as utils
 from config import ModelConfig
 from data_generator import DataGenerator
@@ -638,6 +637,76 @@ class DetectionTargetLayer(KL.Layer):
 ### RPN CLASS ###
 #################
 
+class MaskRCNNModel(KM.Model):
+    """
+    A custom class that encapsulates the whole model and redefines the train_step and 
+    test_step functions for a custom training/evaluation loop.
+    """
+    def train_step(self, data):
+        # The "data" variable contains the batch of data that is extracted from
+        # our custom DataGenerator class.
+        # inputs = [batch_images, batch_rpn_match, batch_rpn_bbox,
+        #            batch_gt_class_ids, batch_gt_boxes, batch_gt_masks]
+        # outputs = []
+        # Normally, batch_gt_class_ids, batch_gt_boxes, batch_gt_masks should be
+        # our y, so our "target" on which we compute loss functions and evaluate the
+        # quality of the model. For MaskRCNN, these values are passed as inputs because
+        # they are actually used in the DetectionTargetLayer to generate valid ROIs, masks, etc.
+        # The classic fit() function of Keras doesn't really like that our "target" list is empty
+        # so we write a custom training step.
+
+        # 1. Extract inputs from data
+        inputs, _ = data
+
+        with tf.GradientTape() as tape:
+            # 2. Forward pass
+            _ = self(inputs, training=True)
+
+            # 3. Compute the loss value
+            # Note that losses in our model are simple layers like any other that we have setup 
+            # as losses through the add_loss() API in the compile() function.
+            # From Keras's documentation (https://keras.io/api/losses/):
+            #       Loss values added via add_loss can be retrieved in the .losses 
+            #       list property of any Layer or Model (they are recursively 
+            #       retrieved from every underlying layer):
+            #       ...
+            #       These losses are cleared by the top-level layer at the start of each 
+            #       forward pass -- they don't accumulate. So layer.losses always contain 
+            #       only the losses created during the last forward pass. 
+            #       You would typically use these losses by summing them before computing 
+            #       your gradients when writing a training loop..
+            loss = sum(self.losses)
+
+            # 4. Backward pass. Update the weights of the model to minimize the loss value.
+            # Select trainable weights
+            trainable_weights = self.trainable_weights
+            # Compute gradients
+            gradients = tape.gradient(loss, trainable_weights)
+
+        # Update weights
+        self.optimizer.apply_gradients(zip(gradients, trainable_weights))
+        # Return a dictionary mapping (automatically updated) metric names to their current values:
+        return {
+            m.name: m.result()
+            for m in self.metrics
+        }
+
+    def test_step(self, data):
+        # We redefine the test step for the same reason
+        # 1. Unpack the data
+        x, _ = data
+        # 2. Compute predictions
+        # (Metrics and losses are automatically updated)
+        _ = self(x, training=False)
+
+        # Return a dict mapping metric names to current value.
+        # Note that it will include the loss (tracked in self.metrics).
+        return {
+            m.name: m.result() 
+            for m in self.metrics
+        }
+
+
 class RPN():
     """
     This class encapsulates the RPN model and some of its functionalities.
@@ -776,7 +845,7 @@ class RPN():
             # custom layer. The original code is below:
             # gt_boxes = KL.Lambda(lambda x: norm_boxes_tf(
             #    x, tf.shape(input_image)[1:3])(input_gt_boxes)
-            gt_boxes = NormBoxesLayer(name="norm_gt_boxes")([
+            norm_gt_boxes = NormBoxesLayer(name="norm_gt_boxes")([
                 input_gt_boxes, input_image
             ])
 
@@ -929,7 +998,7 @@ class RPN():
             # of the RPN for the image.
             rois, target_class_ids, target_deltas, target_mask = \
                 DetectionTargetLayer(self.config, name="proposal_targets")([
-                    rpn_rois, input_gt_class_ids, gt_boxes, input_gt_masks
+                    rpn_rois, input_gt_class_ids, norm_gt_boxes, input_gt_masks
                 ])
 
             output_rois = tf.identity(rois, name="output_rois")
@@ -956,8 +1025,9 @@ class RPN():
 
         # TODO: Add MaskRCNN's classification and regression heads.
 
-        # Finally, instantiate the Keras model
-        self.model = KM.Model(inputs, outputs, name='rpn')
+        # Finally, instantiate the Keras model. We have created a custom class
+        # in order to implement a custom training and validation step.
+        self.model = MaskRCNNModel(inputs, outputs, name='rpn')
 
 
     def detect(self, images):
@@ -1055,13 +1125,16 @@ class RPN():
         # Add losses
         loss_names = ["rpn_class_loss",  "rpn_bbox_loss"]
         for name in loss_names:
+            # TODO: some commits ago I removed the reset of losses because of errors with the training.
+            #       Reapply this (if needed).
             # Retrieve the loss layer from the model
             layer = self.model.get_layer(name)
             # Apply mean within the batch
             loss = tf.math.reduce_mean(layer.output, keepdims=True)
             # Add loss
             self.model.add_loss(loss)
-        
+            self.model.add_metric(loss, name=name)
+
         # Add L2 Regularization
         # Skip gamma and beta weights of batch normalization layers.
         reg_losses = [
@@ -1083,18 +1156,8 @@ class RPN():
 
         # Compile the model
         self.model.compile(
-            optimizer=optimizer,
-            loss=[None] * len(self.model.outputs)
+            optimizer=optimizer
         )
-
-        # Add metrics for losses
-        for name in loss_names:
-            if name in self.model.metrics_names:
-                continue
-            layer = self.model.get_layer(name)
-            self.model.metrics_names.append(name)
-            loss = tf.reduce_mean(layer.output, keepdims=True)
-            self.model.metrics.append(loss)
 
     
     def set_trainable(self, layer_regex, indent=0, verbose=1):
@@ -1109,7 +1172,7 @@ class RPN():
                 print("In model: ", layer.name)
                 # Recursive call
                 self.set_trainable(
-                    layer, layer_regex, indent=indent + 4)
+                    layer_regex, indent=indent + 4)
                 continue
 
             # Does the layer have weights at all?
@@ -1210,13 +1273,15 @@ class RPN():
         # Work-around for Windows: Keras fails on Windows when using
         # multiprocessing workers. See discussion here:
         # https://github.com/matterport/Mask_RCNN/issues/13#issuecomment-353124009
-        if os.name is 'nt':
+        if os.name == 'nt':
             workers = 0
         else:
             workers = multiprocessing.cpu_count()
 
+        # Note that fit() will call our custom train_step()/test_step() methods
         self.model.fit(
-            train_generator,
+            x=train_generator,
+            y=None,
             initial_epoch=self.epoch,
             epochs=epochs,
             steps_per_epoch=self.config.STEPS_PER_EPOCH,
@@ -1225,6 +1290,7 @@ class RPN():
             validation_steps=self.config.VALIDATION_STEPS,
             max_queue_size=100,
             workers=workers,
+            shuffle=True,
             use_multiprocessing=True,
         )
         self.epoch = max(self.epoch, epochs)
