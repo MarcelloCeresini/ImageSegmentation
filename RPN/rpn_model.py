@@ -795,10 +795,8 @@ class RPN():
         self.log_dir = os.path.join(self.out_dir, "{}{:%Y%m%dT%H%M}".format(
             'food', now))
 
-        # Path to save after each epoch. Include placeholders that get filled by Keras.
-        self.checkpoint_path = os.path.join(self.log_dir, "rpn_food_*epoch*.h5")
-        self.checkpoint_path = self.checkpoint_path.replace(
-            "*epoch*", "{self.epoch:04d}")
+        # Path to save after each epoch. Include a placeholder for the epoch that gets filled by Keras.
+        self.checkpoint_path = os.path.join(self.log_dir, "rpn_food_{epoch:04d}.h5")
 
 
     def build(self):
@@ -1256,8 +1254,11 @@ class RPN():
         callbacks = [
             keras.callbacks.TensorBoard(log_dir=self.log_dir,
                                         histogram_freq=0, write_graph=True, write_images=False),
+            # TODO: We need a metric that is the sum or the average of all losses so that we
+            # can keep track of it for saving.
             keras.callbacks.ModelCheckpoint(self.checkpoint_path,
-                                            verbose=0, save_weights_only=True),
+                                            verbose=0, save_weights_only=True,
+                                            save_best_only=True),
         ]
 
         if custom_callbacks is not None:
@@ -1281,7 +1282,7 @@ class RPN():
             validation_steps=self.config.VALIDATION_STEPS,
             max_queue_size=100,
             shuffle=True,
-            use_multiprocessing=True,
+            use_multiprocessing=False
         )
         self.epoch = max(self.epoch, epochs)
 
