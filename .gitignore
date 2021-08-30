@@ -5,6 +5,7 @@ saved_models
 
 ## VIRTUAL ENVS ##
 env
+venv
 
 # TEMPORARY FILES
 *.pyc

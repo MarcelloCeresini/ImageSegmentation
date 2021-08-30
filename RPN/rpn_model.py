@@ -1277,6 +1277,7 @@ class RPN():
             workers = 0
         else:
             workers = multiprocessing.cpu_count()
+        # workers=0
 
         # Note that fit() will call our custom train_step()/test_step() methods
         self.model.fit(
