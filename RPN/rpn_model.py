@@ -1307,7 +1307,9 @@ def rpn_class_loss_graph(rpn_match, rpn_class_logits):
 
     # Squeeze the last dimension of the rpn_match to make things simpler
     # rpn_match becomes a [batch, anchors] tensor.
-    rpn_match = tf.squeeze(rpn_match)
+    # We need to specify the axis of squeeze, otherwise the batch dimension
+    # gets squeezed too if we use batch_size = 1.
+    rpn_match = tf.squeeze(rpn_match, axis=-1)
     # Select usable indices for the loss
     usable_indices = tf.where(K.not_equal(rpn_match, 0))
     # Filter the usable rows for the loss
