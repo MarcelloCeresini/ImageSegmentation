@@ -146,7 +146,7 @@ class DataGenerator(keras.utils.Sequence):
         # We have a full batch. It's time to return the generated data!
         inputs = [batch_images, batch_rpn_match, batch_rpn_bbox,
                     batch_gt_class_ids, batch_gt_boxes, batch_gt_masks]
-        outputs = [] # TODO: should anything really go here?
+        outputs = []
 
         return inputs, outputs
 

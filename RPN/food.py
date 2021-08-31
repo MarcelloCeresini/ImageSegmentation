@@ -23,7 +23,7 @@ import shutil
 import argparse
 
 import numpy as np
-from skimage import io, color
+from skimage import io, color, transform
 import imgaug  # For image augmentation
 
 from tensorflow import keras
@@ -110,6 +110,12 @@ class FoodDataset():
         """
         # Load image
         image = io.imread(self.image_info[image_id]['path'])
+        # Sometimes, the dataset has height and width of an image inverted.
+        # Check this and rotate the image on the fly.
+        if self.image_info[image_id]['height'] == image.shape[1] and \
+            self.image_info[image_id]['width'] == image.shape[0] and \
+            image.shape[0] != image.shape[1]:
+            image = transform.rotate(image, 90, resize=True)
         # If grayscale. Convert to RGB for consistency.
         if image.ndim != 3:
             image = color.gray2rgb(image)

@@ -795,10 +795,8 @@ class RPN():
         self.log_dir = os.path.join(self.out_dir, "{}{:%Y%m%dT%H%M}".format(
             'food', now))
 
-        # Path to save after each epoch. Include placeholders that get filled by Keras.
-        self.checkpoint_path = os.path.join(self.log_dir, "rpn_food_*epoch*.h5")
-        self.checkpoint_path = self.checkpoint_path.replace(
-            "*epoch*", "{self.epoch:04d}")
+        # Path to save after each epoch. Include a placeholder for the epoch that gets filled by Keras.
+        self.checkpoint_path = os.path.join(self.log_dir, "rpn_food_{epoch:04d}.h5")
 
 
     def build(self):
@@ -1256,8 +1254,11 @@ class RPN():
         callbacks = [
             keras.callbacks.TensorBoard(log_dir=self.log_dir,
                                         histogram_freq=0, write_graph=True, write_images=False),
+            # TODO: We need a metric that is the sum or the average of all losses so that we
+            # can keep track of it for saving.
             keras.callbacks.ModelCheckpoint(self.checkpoint_path,
-                                            verbose=0, save_weights_only=True),
+                                            verbose=0, save_weights_only=True,
+                                            save_best_only=True),
         ]
 
         if custom_callbacks is not None:
@@ -1269,6 +1270,7 @@ class RPN():
         self.set_trainable(layers)
         self.compile(learning_rate, self.config.LEARNING_MOMENTUM)
 
+<<<<<<< HEAD
         # TODO: It's no harm, but check this out
         # Work-around for Windows: Keras fails on Windows when using
         # multiprocessing workers. See discussion here:
@@ -1279,6 +1281,8 @@ class RPN():
             workers = multiprocessing.cpu_count()
         # workers=0
 
+=======
+>>>>>>> 134085ce6c42cd4e9913b67bbffd0e38d2992aba
         # Note that fit() will call our custom train_step()/test_step() methods
         self.model.fit(
             x=train_generator,
@@ -1290,9 +1294,8 @@ class RPN():
             validation_data=val_generator,
             validation_steps=self.config.VALIDATION_STEPS,
             max_queue_size=100,
-            workers=workers,
             shuffle=True,
-            use_multiprocessing=True,
+            use_multiprocessing=False
         )
         self.epoch = max(self.epoch, epochs)
 
@@ -1317,7 +1320,9 @@ def rpn_class_loss_graph(rpn_match, rpn_class_logits):
 
     # Squeeze the last dimension of the rpn_match to make things simpler
     # rpn_match becomes a [batch, anchors] tensor.
-    rpn_match = tf.squeeze(rpn_match)
+    # We need to specify the axis of squeeze, otherwise the batch dimension
+    # gets squeezed too if we use batch_size = 1.
+    rpn_match = tf.squeeze(rpn_match, axis=-1)
     # Select usable indices for the loss
     usable_indices = tf.where(K.not_equal(rpn_match, 0))
     # Filter the usable rows for the loss
