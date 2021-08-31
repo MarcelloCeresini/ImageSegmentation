@@ -97,7 +97,7 @@ ratio = []
 
 tot_img = len(image_ids)
 # for acceptable in np.arange(500, 100, -1):
-acceptable = 272
+acceptable = 200
 # minimum_appereances.append(int(acceptable))
 selected_ids = [tup[0] for tup in data if (tup[1] > acceptable)]
 ids = []
