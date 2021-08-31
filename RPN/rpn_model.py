@@ -1270,19 +1270,6 @@ class RPN():
         self.set_trainable(layers)
         self.compile(learning_rate, self.config.LEARNING_MOMENTUM)
 
-<<<<<<< HEAD
-        # TODO: It's no harm, but check this out
-        # Work-around for Windows: Keras fails on Windows when using
-        # multiprocessing workers. See discussion here:
-        # https://github.com/matterport/Mask_RCNN/issues/13#issuecomment-353124009
-        if os.name == 'nt':
-            workers = 0
-        else:
-            workers = multiprocessing.cpu_count()
-        # workers=0
-
-=======
->>>>>>> 134085ce6c42cd4e9913b67bbffd0e38d2992aba
         # Note that fit() will call our custom train_step()/test_step() methods
         self.model.fit(
             x=train_generator,
