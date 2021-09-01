@@ -97,6 +97,13 @@ class ModelConfig():
     # proposals are used in the loss function.
     ROI_POSITIVE_RATIO = 0.33
 
+    # TODO: what does this mean??? Pooled ROIs?????
+    POOL_SIZE = 7
+    MASK_POOL_SIZE = 14
+
+    # Layer size inside classification head
+    FPN_CLASSIF_LAYERS_SIZE = 1024
+
     # Maximum number of ground truth instances to use in one image
     MAX_GT_INSTANCES = 100
 
@@ -130,6 +137,14 @@ class ModelConfig():
     # Number of classes in the dataset:
     NUM_CLASSES = 1+273 # 273 food classes + background
                         # TODO: remove some of the classes
+
+    # Since we will group some classes togheter (because of similarities), NUM_CLASSES will be higher than 
+    # the real number of classes that we will use, NUM_DIFFERENT_CLASSES
+    NUM_DIFFERENT_CLASSES = 0 # TODO: put the right number
+
+    # Accepted classes ids, already in groups
+    # Example: ACCEPTED_CLASSES_IDS = [[1040, 1026], [2512, 2504], .....]
+    ACCEPTED_CLASSES_IDS = []
 
     # Train or freeze batch normalization layers
     #     None: Train BN layers. This is the normal mode

@@ -91,6 +91,14 @@ class DataGenerator(keras.utils.Sequence):
                 # have any of the classes we care about.
                 if not np.any(gt_class_ids > 0):
                     continue
+                
+                # We only want images with accepted classes, we do not keep all classes
+                # So we also skip images that do not contain any annotation that we accepted
+                # "set" is used because intersection is a method of the set class
+                # "flatten" takes a nested list and flattens it
+                intersection = set(gt_class_ids).intersection(utils.flatten(self.config.ACCEPTED_CLASSES_IDS))
+                if intersection == set():
+                    continue
             
                 # RPN targets
                 rpn_match, rpn_bbox = self.build_rpn_targets(self.anchors,
