@@ -1,3 +1,4 @@
+import tensorflow as tf
 import scipy
 import numpy as np
 from skimage.transform import resize
@@ -325,3 +326,12 @@ def log(text:str, array:np.array=None):
             text += ("min: {:10}  max: {:10}".format("",""))
         text += "  {}".format(array.dtype)
     print(text)
+
+def flatten(l:list):
+    '''Given a nested list (list of lists) flattens it into one list'''
+    return [item for sublist in l for item in sublist]
+
+@tf.function
+def log2_graph(x):
+    """Implementation of Log2. TF doesn't have a native implementation."""
+    return tf.log(x) / tf.log(2.0)
