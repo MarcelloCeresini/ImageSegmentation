@@ -33,6 +33,7 @@ from pycocotools import mask as maskUtils
 
 from rpn_model import RPN
 from config import ModelConfig
+import utils_functions as utils
 
 ###############
 ###  PATHS  ###
@@ -148,6 +149,8 @@ class FoodDataset():
         if not class_ids:
             # All classes
             class_ids = sorted(coco.getCatIds())
+            # accepted_ids = self.config.ACCEPTED_CLASSES_IDS
+            # class_ids = list(set(class_ids).intersection(utils.flatten(accepted_ids)))
 
         # Load all images or a subset?
         if class_ids:
