@@ -144,7 +144,18 @@ class ModelConfig():
 
     # Accepted classes ids, already in groups
     # Example: ACCEPTED_CLASSES_IDS = [[1040, 1026], [2512, 2504], .....]
-    ACCEPTED_CLASSES_IDS = []
+    ACCEPTED_CLASSES_IDS = [[1151], [1056], [1154], [1724, 1730, 1728, 1727, 1731], \
+        [1566, 1565, 1554, 1607, 1556, 1520, 1538, 1536, 3306, 1561, 1522, 1545, 1557, 1523, 1560, 1551], \
+        [2053], [1078], [1311, 1310, 1307, 1352, 1308, 1327, 1280, 1264], [1788, 1789, 1793, 1794], \
+        [2131, 2134], [2512, 2504, 2521, 2501, 2524], [1061], [2022], [2099], [1022, 1019], \
+        [1505, 1483, 1496, 1506, 1513, 1490, 1487, 1494], [2939, 633, 630], [1010, 1004], \
+        [1468, 1469, 1478], [1040, 1026, 1038, 1050], [1967, 2973], \
+        [2498, 2530, 2555, 2534, 2543, 2562], [1069], [2738], [2578, 2580, 3080, 3262], [2618], [2620], \
+        [5641, 2730, 2711, 2743, 1383, 3332]]
+    NEW_NAMES = ["apple", "avocado", "banana", "beef", "bread", "butter", "carrot", "cheese", "chicken", \
+        "chocolate", "coffee", "cucumber", "egg", "jam", "mixed-vegetables", "pasta", \
+        "pizza", "potatoes", "rice", "salad", "salmon", "tea", "tomato", "tomato-sauce", \
+        "water", "red-wine", "white-wine", "yogurt-sauce"]
 
     # Train or freeze batch normalization layers
     #     None: Train BN layers. This is the normal mode

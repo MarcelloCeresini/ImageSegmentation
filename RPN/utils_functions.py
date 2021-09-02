@@ -331,25 +331,16 @@ def flatten(l:list):
     '''Given a nested list (list of lists) flattens it into one list'''
     return [item for sublist in l for item in sublist]
 
-def group_classes(accepted_ids:list):
+def group_classes(accepted_ids:list, new_names:list):
     class_ids = []
     for i in range(len(accepted_ids)):
         for element in accepted_ids[i]:
-            class_ids.append([element, i])
-    return tf.constant(class_ids)
-
-    '''
-    # This is how you would use the above function
-    # CHANGING ANNOTATION IDS TO CREATE SUPERCATEGORIES (groups of categories)
-        annotations = kwargs["annotations"]
-        old_new_ids = utils.group_classes(self.config.ACCEPTED_CLASSES_IDS)
-        
-        for a in annotations:
-            mask = tf.where(old_new_ids[:,0] == a["category_id"])
-            a["category_id"] = int(tf.gather(old_new_ids[:,1], mask))
-        kwargs["annotations"] = annotations
-    '''
-
+            my_dict = {}
+            my_dict["old_id"] = element
+            my_dict["new_id"] = i
+            my_dict["new_name"] = new_names[i]
+            class_ids.append(my_dict)
+    return class_ids
 
 @tf.function
 def log2_graph(x):

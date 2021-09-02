@@ -3,6 +3,10 @@ saved_model_big/
 saved_model/
 saved_models
 
+## data ##
+data
+data (copy)
+
 ## VIRTUAL ENVS ##
 env
 venv
