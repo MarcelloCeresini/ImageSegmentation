@@ -1,4 +1,3 @@
-import tensorflow as tf
 import scipy
 import numpy as np
 from skimage.transform import resize
@@ -101,6 +100,7 @@ def generate_anchors(scales, ratios, shape, feature_stride, anchor_stride):
     # Concatenate on the columns obtaining x1,y1,x2,y2
     return boxes
 
+
 def preprocess_inputs(images, config:ModelConfig):
     '''
     Takes a list of images, modifies them to the format expected as an
@@ -113,7 +113,7 @@ def preprocess_inputs(images, config:ModelConfig):
     The preprocessing includes resizing, zero-padding and normalization.
     '''
     preprocessed_inputs = []
-    windows = []
+    image_metas = []
     for image in images:
         preprocessed_image, window, scale, padding = resize_image(
             image, config.IMAGE_MIN_DIM, config.IMAGE_MAX_DIM
@@ -122,12 +122,18 @@ def preprocess_inputs(images, config:ModelConfig):
         # subtracting the mean pixel to it
         # and converting the result to float.
         preprocessed_image = preprocessed_image.astype(np.float32) - config.MEAN_PIXEL
+        # Build image meta
+        image_meta = compose_image_meta(
+            0, # We don't care about the ID in detection mode
+            image.shape, preprocessed_image.shape, window, scale
+        )
         preprocessed_inputs.append(preprocessed_image)
-        windows.append(window)
+        image_metas.append(image_meta)
     # Pack into arrays
     preprocessed_inputs = np.stack(preprocessed_inputs)
-    windows = np.stack(windows)
-    return preprocessed_inputs, windows
+    image_metas = np.stack(image_metas)
+    return preprocessed_inputs, image_metas
+
 
 def resize_image(image, min_dim, max_dim):
     """
@@ -177,6 +183,7 @@ def resize_image(image, min_dim, max_dim):
     window = (top_pad, left_pad, h + top_pad, w + left_pad)
     return image.astype(image_dtype), window, scale, padding
 
+
 def resize_mask(mask, scale, padding, crop=None):
     """Resizes a mask using the given scale and padding.
     Typically, you get the scale and padding from resize_image() to
@@ -193,6 +200,7 @@ def resize_mask(mask, scale, padding, crop=None):
     else:
         mask = np.pad(mask, padding, mode='constant', constant_values=0)
     return mask
+
 
 def norm_boxes(boxes, shape):
     """Converts boxes from pixel coordinates to normalized coordinates.
@@ -219,6 +227,7 @@ def norm_boxes(boxes, shape):
     ])
     return ((boxes - shift) / scale).astype(np.float32)
 
+
 # Just the inverse function
 def denorm_boxes(boxes, shape):
     """Converts boxes from normalized coordinates to pixel coordinates.
@@ -235,6 +244,7 @@ def denorm_boxes(boxes, shape):
     scale = np.array([h - 1, w - 1, h - 1, w - 1])
     shift = np.array([0, 0, 1, 1])
     return np.around((boxes * scale) + shift).astype(np.int32)
+
 
 def extract_bboxes(mask):
     """Compute bounding boxes from masks.
@@ -261,6 +271,7 @@ def extract_bboxes(mask):
         boxes[i] = np.array([y1, x1, y2, x2])
     return boxes.astype(np.int32)
 
+
 def normalize_image(images, mean_pixel):
     '''
     Takes an image (numpy matrix) in the format read from file and prepares
@@ -273,6 +284,7 @@ def normalize_image(images, mean_pixel):
     '''
     return images.astype(np.float32) - mean_pixel
 
+
 def denormalize_image(image, mean_pixel):
     '''
     Takes an image (numpy matrix) in the format expected by the neural network
@@ -283,6 +295,7 @@ def denormalize_image(image, mean_pixel):
     Returns an image (numpy matrix) containing the restored image images ([h, w, 3]).
     '''
     return np.asarray(image + mean_pixel, dtype=np.uint8)
+
 
 def compute_overlaps(boxes1, boxes2):
     """
@@ -313,6 +326,7 @@ def compute_overlaps(boxes1, boxes2):
         inters[:, i] = iou
     return inters
 
+
 def log(text:str, array:np.array=None):
     """Prints a text message. And, optionally, if a Numpy array is provided it
     prints it's shape, min, and max values.
@@ -327,9 +341,11 @@ def log(text:str, array:np.array=None):
         text += "  {}".format(array.dtype)
     print(text)
 
+
 def flatten(l:list):
     '''Given a nested list (list of lists) flattens it into one list'''
     return [item for sublist in l for item in sublist]
+
 
 def group_classes(accepted_ids:list, new_names:list):
     class_ids = []
@@ -342,7 +358,45 @@ def group_classes(accepted_ids:list, new_names:list):
             class_ids.append(my_dict)
     return class_ids
 
-@tf.function
-def log2_graph(x):
-    """Implementation of Log2. TF doesn't have a native implementation."""
-    return tf.log(x) / tf.log(2.0)
+
+def compose_image_meta(image_id, original_image_shape, image_shape,
+                       window, scale):
+    """Takes attributes of an image and puts them in one 1D array.
+
+    image_id: An int ID of the image. Useful for debugging.
+    original_image_shape: [H, W, C] before resizing or padding.
+    image_shape: [H, W, C] after resizing and padding
+    window: (y1, x1, y2, x2) in pixels. The area of the image where the real
+            image is (excluding the padding)
+    scale: The scaling factor applied to the original image (float32)
+    """
+    meta = np.array(
+        [image_id] +                    # size:1
+        list(original_image_shape) +    # size:3
+        list(image_shape) +             # size:3
+        list(window) +                  # size:4 (y1, x1, y2, x2) in image cooredinates
+        [scale]                         # size:1
+    )
+    return meta
+
+
+def parse_image_meta(meta):
+    """Parses an array that contains image attributes to its components.
+    See compose_image_meta() for more details.
+
+    meta: [batch, meta length] where meta length depends on NUM_CLASSES
+
+    Returns a dict of the parsed values.
+    """
+    image_id = meta[:, 0]
+    original_image_shape = meta[:, 1:4]
+    image_shape = meta[:, 4:7]
+    window = meta[:, 7:11]  # (y1, x1, y2, x2) window of image in in pixels
+    scale = meta[:, 11]
+    return {
+        "image_id": image_id.astype(np.int32),
+        "original_image_shape": original_image_shape.astype(np.int32),
+        "image_shape": image_shape.astype(np.int32),
+        "window": window.astype(np.int32),
+        "scale": scale.astype(np.float32)
+    }

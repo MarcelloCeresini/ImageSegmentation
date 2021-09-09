@@ -28,6 +28,10 @@ class ModelConfig():
     # Define the image shape (1024x1024x3 if no changes to parameters are made)
     IMAGE_SHAPE = np.array([IMAGE_MAX_DIM, IMAGE_MAX_DIM, 3])
 
+    # Image meta data length
+    # See compose_image_meta() for details
+    IMAGE_META_SIZE = 1 + 3 + 3 + 4 + 1
+
     ### BACKBONE RELATED CONSTANTS ###
 
     # Whether to use Resnet50 or Resnet101
@@ -97,16 +101,6 @@ class ModelConfig():
     # proposals are used in the loss function.
     ROI_POSITIVE_RATIO = 0.33
 
-    # TODO: what does this mean??? Pooled ROIs?????
-    POOL_SIZE = 7
-    MASK_POOL_SIZE = 14
-
-    # Layer size inside classification head
-    FPN_CLASSIF_LAYERS_SIZE = 1024
-
-    # Maximum number of ground truth instances to use in one image
-    MAX_GT_INSTANCES = 100
-
     # Number of training steps for each epoch. Defines the number of steps after which
     # we should make a validation step
     STEPS_PER_EPOCH = 1000
@@ -135,8 +129,7 @@ class ModelConfig():
     GRADIENT_CLIP_NORM = 5.0
 
     # Number of classes in the dataset:
-    NUM_CLASSES = 1+273 # 273 food classes + background
-                        # TODO: remove some of the classes
+    NUM_CLASSES = 28+1    # The dataset has been modified to have 28 classes (+ background class)
 
     # Since we will group some classes togheter (because of similarities), NUM_CLASSES will be higher than 
     # the real number of classes that we will use, NUM_DIFFERENT_CLASSES
@@ -152,6 +145,7 @@ class ModelConfig():
         [1468, 1469, 1478], [1040, 1026, 1038, 1050], [1967, 2973], \
         [2498, 2530, 2555, 2534, 2543, 2562], [1069], [2738], [2578, 2580, 3080, 3262], [2618], [2620], \
         [5641, 2730, 2711, 2743, 1383, 3332]]
+
     NEW_NAMES = ["apple", "avocado", "banana", "beef", "bread", "butter", "carrot", "cheese", "chicken", \
         "chocolate", "coffee", "cucumber", "egg", "jam", "mixed-vegetables", "pasta", \
         "pizza", "potatoes", "rice", "salad", "salmon", "tea", "tomato", "tomato-sauce", \
@@ -162,6 +156,28 @@ class ModelConfig():
     #     False: Freeze BN layers. Good when using a small batch size
     #     True: (don't use). Set layer in training mode even when predicting
     TRAIN_BN = False  # Defaulting to False since batch size is often small
+
+    ### DETECTION HEAD RELATED CONSTANTS ###
+    
+    # Size of the ROIAlign-pooled ROIs 
+    POOL_SIZE = 7
+    MASK_POOL_SIZE = 14
+
+    # Layer size inside classification head
+    FPN_CLASSIF_LAYERS_SIZE = 1024
+
+    # Max number of final detections
+    DETECTION_MAX_INSTANCES = 100
+
+    # Minimum probability value to accept a detected instance
+    # ROIs below this threshold are skipped
+    DETECTION_MIN_CONFIDENCE = 0.7
+
+    # Non-maximum suppression threshold for detection
+    DETECTION_NMS_THRESHOLD = 0.3
+
+    # Maximum number of ground truth instances to use in one image
+    MAX_GT_INSTANCES = 100
 
     ### MASK HEAD RELATED CONSTANTS ###
 

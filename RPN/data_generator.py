@@ -107,7 +107,8 @@ class DataGenerator(keras.utils.Sequence):
                 if b == 0:
                     # Init batch arrays. We are doing it here because we need some of the
                     # previously computed variables.
-                    batch_image_meta = np.zeros((self.config.BATCH_SIZE,) + image_meta)
+                    batch_image_meta = np.zeros((self.config.BATCH_SIZE,) + image_meta.shape,
+                        dtype=image_meta.dtype)
                     batch_rpn_match = np.zeros(
                         [self.config.BATCH_SIZE, self.anchors.shape[0], 1], dtype=rpn_match.dtype)
                     batch_rpn_bbox = np.zeros(
@@ -152,7 +153,7 @@ class DataGenerator(keras.utils.Sequence):
                     raise
         
         # We have a full batch. It's time to return the generated data!
-        inputs = [batch_images, batch_rpn_match, batch_rpn_bbox,
+        inputs = [batch_images, batch_image_meta, batch_rpn_match, batch_rpn_bbox,
                     batch_gt_class_ids, batch_gt_boxes, batch_gt_masks]
         outputs = []
 
@@ -220,7 +221,11 @@ class DataGenerator(keras.utils.Sequence):
         # bbox: [num_instances, (y1, x1, y2, x2)]
         bbox = utils.extract_bboxes(mask)
 
-        return image, original_shape, class_ids, bbox, mask
+        # Collect metadata about the image in an array
+        image_meta = utils.compose_image_meta(id, original_shape, 
+                                        image.shape, window, scale)
+
+        return image, image_meta, class_ids, bbox, mask
 
     def build_rpn_targets(self, anchors, gt_class_ids, 
                             gt_boxes, config):
