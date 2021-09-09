@@ -202,10 +202,14 @@ def fpn_classifier_graph(rois, feature_maps, input_image,
     x = PyramidROIAlign([pool_size, pool_size],
                         name="roi_align_classifier")([rois, input_image] + feature_maps)
     # Two 1024 FC layers (implemented with Conv2D for consistency)
+    # TimeDistributed is used to apply indipendently the Conv2D to each ROI indipendently
+    # not really directly to the ROI, after the application of ROI align
     x = KL.TimeDistributed(KL.Conv2D(layers_size, (pool_size, pool_size), padding="valid"),
                            name="mrcnn_class_conv1")(x)
+    # Oss: when BATCH is SMALL, batchnorm is bad --> write "False" in config false if that's the case
     x = KL.TimeDistributed(BatchNorm(), name='mrcnn_class_bn1')(x, training=train_bn)
     x = KL.Activation('relu')(x)
+    # this time it's just a 1x1 conv2d, you already did the pooling above
     x = KL.TimeDistributed(KL.Conv2D(layers_size, (1, 1)),
                            name="mrcnn_class_conv2")(x)
     x = KL.TimeDistributed(BatchNorm(), name='mrcnn_class_bn2')(x, training=train_bn)
@@ -214,13 +218,13 @@ def fpn_classifier_graph(rois, feature_maps, input_image,
     shared = KL.Lambda(lambda x: K.squeeze(K.squeeze(x, 3), 2),
                        name="pool_squeeze")(x)
 
-    # Classifier head
+    # Classifier head TODO change dense layer maybe?
     mrcnn_class_logits = KL.TimeDistributed(KL.Dense(num_classes),
                                             name='mrcnn_class_logits')(shared)
     mrcnn_probs = KL.TimeDistributed(KL.Activation("softmax"),
                                      name="mrcnn_class")(mrcnn_class_logits)
 
-    # BBox head
+    # BBox head TODO change dense layer maybe?
     # [batch, num_rois, NUM_CLASSES * (dy, dx, log(dh), log(dw))]
     x = KL.TimeDistributed(KL.Dense(num_classes * 4, activation='linear'),
                            name='mrcnn_bbox_fc')(shared)
@@ -229,6 +233,42 @@ def fpn_classifier_graph(rois, feature_maps, input_image,
     mrcnn_bbox = KL.Reshape((s[1], num_classes, 4), name="mrcnn_bbox")(x)
 
     return mrcnn_class_logits, mrcnn_probs, mrcnn_bbox
+
+def mrcnn_bbox_loss_graph(target_bbox, target_class_ids, pred_bbox):
+    """
+    Loss for Mask R-CNN bounding box refinement.
+        target_bbox: [batch, num_rois, (dy, dx, log(dh), log(dw))]
+        target_class_ids: [batch, num_rois]. Integer class IDs.
+        pred_bbox: [batch, num_rois, num_classes, (dy, dx, log(dh), log(dw))]
+    """
+    # Reshape to merge batch and roi dimensions for simplicity.
+    target_bbox = K.reshape(target_bbox, (-1, 4))
+    target_class_ids = K.reshape(target_class_ids, (-1,))
+    pred_bbox = K.reshape(pred_bbox, (-1, K.int_shape(pred_bbox)[2], 4))
+
+    # Only positive ROIs contribute to the loss. And only
+    # the right class_id of each ROI. 
+    # Get their indices.
+    positive_roi_ix = tf.where(target_class_ids > 0)[:, 0]
+    # Get the ids
+    positive_roi_class_ids = tf.cast(
+        tf.gather(target_class_ids, positive_roi_ix), tf.int64)
+    # Pair them
+    indices = tf.stack([positive_roi_ix, positive_roi_class_ids], axis=1)
+
+    # Gather the deltas (predicted and true) that contribute to loss
+    # Use the indeces to get the gt_bbox
+    target_bbox = tf.gather(target_bbox, positive_roi_ix)
+    # And the predicted ones
+    pred_bbox = tf.gather_nd(pred_bbox, indices)
+
+    # Smooth-L1 Loss (switch: condition, if expression, else expression)
+    loss = K.switch(tf.size(target_bbox) > 0,
+                    smooth_l1_loss(y_true=target_bbox, y_pred=pred_bbox),
+                    tf.constant(0.0))
+    
+    loss = K.mean(loss)
+    return loss
 
 ###############################
 # NMS & BBOX REFINEMENT LAYER #
@@ -730,6 +770,7 @@ class PyramidROIAlign(KL):
         y1, x1, y2, x2 = tf.split(boxes, 4, axis=2)
         h = y2 - y1
         w = x2 - x1
+
         # Use shape of first image. Images in a batch must have the same size.
         image_shape = input_image[0].shape # it could also be ".input_shape" depending on the tensorflow version
 
@@ -758,7 +799,7 @@ class PyramidROIAlign(KL):
             box_to_level.append(ix)
 
             # Stop gradient propogation to ROI proposals
-            # Why??
+            # Why?? ##########################################
             level_boxes = tf.stop_gradient(level_boxes)
             box_indices = tf.stop_gradient(box_indices)
 
@@ -772,9 +813,9 @@ class PyramidROIAlign(KL):
             # which is how it's done in tf.crop_and_resize()
             # Result: [batch * num_boxes, pool_height, pool_width, channels]
 
-            # Returns a tensor with `crops` from the input `image` at positions defined at
-            # the bounding box locations in `boxes`. The cropped boxes are all resized (with
-            # bilinear or nearest neighbor interpolation) to a fixed
+            # Returns a tensor with `crops` from the input `image (in this case, the feature maps`) 
+            # at positions defined at the bounding box locations in `boxes`. The cropped boxes are 
+            # all resized (with bilinear or nearest neighbor interpolation) to a fixed
             # `size = [crop_height, crop_width]`
             pooled.append(tf.image.crop_and_resize(
                 feature_maps[i], level_boxes, box_indices, self.pool_shape,
@@ -992,6 +1033,10 @@ class RPN():
         input_image = KL.Input(
             shape=self.config.IMAGE_SHAPE, name='input_image'
         )
+        # And the informations about the image --> A LOT OF INFORMATIONS, do we need them? TODO
+        input_image_meta = KL.Input(shape=[self.config.IMAGE_META_SIZE],
+            name="input_image_meta"
+        )
 
         # If we are training the network, we need the groundtruth rpn matches (1 or 0) 
         # and bounding boxes as well as the detections groundtruth 
@@ -1160,15 +1205,6 @@ class RPN():
             name='ROI_refinement')([rpn_classes, rpn_deltas, anchors])
 
         if self.mode == 'training':
-            # We need to specify which are the class IDs the dataset supports
-            # We haven't explored the dataset correctly yet, so we'll skip this
-            # part for now
-
-            # TODO: this is needed for the computation of the classification loss.
-            #active_class_ids = KL.Lambda(
-            #    lambda x: parse_image_meta_graph(x)["active_class_idx"]
-            #)(input_image_meta)
-
             # Generate some target proposals among the set of ROIs we have generated
             # earlier in the network. These target proposals represent the target output
             # of the RPN for the image.
@@ -1184,10 +1220,12 @@ class RPN():
             # First head is the classification head
             # As outputs it will give logits and probabilities, togheter with the box
             mrcnn_class_logits, mrcnn_class, mrcnn_bbox =\
-                fpn_classifier_graph(rois, mrcnn_feature_maps, input_image,
+                 fpn_classifier_graph(rois, mrcnn_feature_maps, input_image,
                                      self.config.POOL_SIZE, self.config.NUM_CLASSES,
                                      train_bn=self.config.TRAIN_BN,
-                                     fc_layers_size= self.config.FPN_CLASSIF_FC_LAYERS_SIZE)
+                                     fc_layers_size= self.config.FPN_CLASSIF_LAYERS_SIZE)
+
+            # TODO: add fpn mask graph
 
             # RPN losses:
             # 1. Compute loss for the classification BG/FG.
@@ -1196,6 +1234,13 @@ class RPN():
             # 2. Compute loss for the bounding box regression.
             rpn_bbox_loss = KL.Lambda(lambda x: rpn_box_regression_loss_graph(*x), name="rpn_bbox_loss")(
                 [self.config.BATCH_SIZE, input_rpn_bbox, input_rpn_match, rpn_deltas])
+
+            # Classification and box losses (why do you use TARGET_CLASS_IDS and not MRCNN_CLASS?? TODO)
+            class_loss = KL.Lambda(lambda x: mrcnn_class_loss_graph(*x), name="mrcnn_class_loss")(
+                [target_class_ids, mrcnn_class_logits])
+
+            bbox_loss = KL.Lambda(lambda x: mrcnn_bbox_loss_graph(*x), name="mrcnn_bbox_loss")(
+                [target_deltas, target_class_ids, mrcnn_bbox])
 
             # Model
             inputs = [input_image, input_rpn_match, input_rpn_bbox, input_gt_class_ids,
@@ -1208,6 +1253,8 @@ class RPN():
             outputs = [rpn_classes, rpn_rois]
 
         # TODO: Add MaskRCNN's classification and regression heads.
+
+
 
         # Finally, instantiate the Keras model. We have created a custom class
         # in order to implement a custom training and validation step.
@@ -1561,6 +1608,47 @@ def rpn_box_regression_loss_graph(batch_size, target_deltas, rpn_match, rpn_bbox
     loss = K.switch(tf.size(loss) > 0, K.mean(loss), tf.constant(0.0))
     return loss
 
+def mrcnn_class_loss_graph(target_class_ids, pred_class_logits):
+    """Loss for the classifier head of Mask RCNN.
+    target_class_ids: [batch, num_rois]. Integer class IDs. Uses zero
+        padding to fill in the array.
+    pred_class_logits: [batch, num_rois, num_classes]
+    """
+    # During model building, Keras calls this function with
+    # target_class_ids of type float32. Unclear why. Cast it
+    # to int to get around it.
+    target_class_ids = tf.cast(target_class_ids, 'int64')
+
+    # Find predictions of classes that are not in the dataset.
+    pred_class_ids = tf.argmax(pred_class_logits, axis=2)
+
+    # Loss
+    loss = tf.nn.sparse_softmax_cross_entropy_with_logits(
+        labels=target_class_ids, logits=pred_class_logits)
+
+    # Erase losses of predictions of classes that are not in the active
+    # classes of the image.
+    loss = loss * pred_class_ids
+
+    # Computer loss mean. Use only predictions that contribute
+    # to the loss to get a correct mean.
+    loss = tf.reduce_sum(loss) / tf.reduce_sum(pred_class_ids)
+    return loss
+
+
+def smooth_l1_loss(y_true, y_pred):
+    """Implements Smooth-L1 loss.
+    0.5*(x-y)^2  if  abs(x-y)<1
+    abs(x-y)-0.5 otherwise
+    y_true and y_pred are typically: [N, 4], but could be any shape.
+    """
+    diff = K.abs(y_true - y_pred)
+    # mask that tells which pair is less distant than one
+    less_than_one = K.cast(K.less(diff, 1.0), "float32")
+    # less_than_one is the first expression, 1-less_than_one is the second
+    loss = (less_than_one * 0.5 * diff**2) + (1 - less_than_one) * (diff - 0.5)
+    return loss
+
 #####################################
 ### MODEL-RELATED UTILS FUNCTIONS ###
 #####################################
@@ -1579,6 +1667,43 @@ class NormBoxesLayer(KL.Layer):
         scale = tf.concat([h, w, h, w], axis=-1) - tf.constant(1.0)  # Concatenate h and w and reduce them all by 1
         shift = tf.constant([0., 0., 1., 1.])
         return (boxes - shift) / scale
+
+class BatchNorm(KL.BatchNormalization):
+    """Extends the Keras BatchNormalization class to allow a central place
+    to make changes if needed.
+    Batch normalization has a negative effect on training if batches are small
+    so this layer is often frozen (via setting in Config class) and functions
+    as linear layer.
+    """
+    def call(self, inputs, training=None):
+        """
+        Note about training values:
+            None: Train BN layers. This is the normal mode
+            False: Freeze BN layers. Good when batch size is small
+            True: (don't use). Set layer in training mode even when making inferences
+        """
+        return super(self.__class__, self).call(inputs, training=training)
+
+def parse_image_meta_graph(meta):
+    """Parses a tensor that contains image attributes to its components.
+    See compose_image_meta() for more details.
+    meta: [batch, meta length] where meta length depends on NUM_CLASSES
+    Returns a dict of the parsed tensors.
+    """
+    image_id = meta[:, 0]
+    original_image_shape = meta[:, 1:4]
+    image_shape = meta[:, 4:7]
+    window = meta[:, 7:11]  # (y1, x1, y2, x2) window of image in in pixels
+    scale = meta[:, 11]
+    active_class_ids = meta[:, 12:] # all of the ids available
+    return {
+        "image_id": image_id,
+        "original_image_shape": original_image_shape,
+        "image_shape": image_shape,
+        "window": window,
+        "scale": scale,
+        # "active_class_ids": active_class_ids, # not really needed anymore
+    }
 
 @tf.function
 def trim_zeros_tf(boxes, name='trim_zeros'):
