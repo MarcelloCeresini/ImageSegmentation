@@ -9,7 +9,6 @@ import re
 import datetime
 import os
 import errno
-import multiprocessing
 
 import tensorflow as tf
 # Refer to TF's internal version of Keras for more stability
@@ -187,7 +186,7 @@ def fpn_classifier_graph(rois, feature_maps, input_image,
                   [P2, P3, P4, P5]. Each has a different resolution.
     input_image: [batch, (image_data)] Image details, given as first input to the model
 
-    pool_size: The width of the square feature map generated from ROI Pooling. ?????????????????????
+    pool_size: The width of the square feature map generated from ROI Align
     num_classes: number of classes, which determines the depth of the results
     train_bn: Boolean. Train or freeze Batch Norm layers
     fc_layers_size: Size of the 2 FC layers
@@ -197,16 +196,16 @@ def fpn_classifier_graph(rois, feature_maps, input_image,
         bbox_deltas: [batch, num_rois, NUM_CLASSES, (dy, dx, log(dh), log(dw))] Deltas to apply to
                      proposal boxes
     """
-    # ROI Pooling
+    # ROI Align
     # Shape: [batch, num_rois, POOL_SIZE, POOL_SIZE, channels]
     x = PyramidROIAlign([pool_size, pool_size],
                         name="roi_align_classifier")([rois, input_image] + feature_maps)
     # Two 1024 FC layers (implemented with Conv2D for consistency)
-    # TimeDistributed is used to apply indipendently the Conv2D to each ROI indipendently
+    # TimeDistributed is used to apply the Conv2D to each ROI independently
     # not really directly to the ROI, after the application of ROI align
     x = KL.TimeDistributed(KL.Conv2D(layers_size, (pool_size, pool_size), padding="valid"),
                            name="mrcnn_class_conv1")(x)
-    # Oss: when BATCH is SMALL, batchnorm is bad --> write "False" in config false if that's the case
+    # Oss: when BATCH is SMALL, batchnorm is bad --> write "False" in config if that's the case
     x = KL.TimeDistributed(BatchNorm(), name='mrcnn_class_bn1')(x, training=train_bn)
     x = KL.Activation('relu')(x)
     # this time it's just a 1x1 conv2d, you already did the pooling above
@@ -233,42 +232,6 @@ def fpn_classifier_graph(rois, feature_maps, input_image,
     mrcnn_bbox = KL.Reshape((s[1], num_classes, 4), name="mrcnn_bbox")(x)
 
     return mrcnn_class_logits, mrcnn_probs, mrcnn_bbox
-
-def mrcnn_bbox_loss_graph(target_bbox, target_class_ids, pred_bbox):
-    """
-    Loss for Mask R-CNN bounding box refinement.
-        target_bbox: [batch, num_rois, (dy, dx, log(dh), log(dw))]
-        target_class_ids: [batch, num_rois]. Integer class IDs.
-        pred_bbox: [batch, num_rois, num_classes, (dy, dx, log(dh), log(dw))]
-    """
-    # Reshape to merge batch and roi dimensions for simplicity.
-    target_bbox = K.reshape(target_bbox, (-1, 4))
-    target_class_ids = K.reshape(target_class_ids, (-1,))
-    pred_bbox = K.reshape(pred_bbox, (-1, K.int_shape(pred_bbox)[2], 4))
-
-    # Only positive ROIs contribute to the loss. And only
-    # the right class_id of each ROI. 
-    # Get their indices.
-    positive_roi_ix = tf.where(target_class_ids > 0)[:, 0]
-    # Get the ids
-    positive_roi_class_ids = tf.cast(
-        tf.gather(target_class_ids, positive_roi_ix), tf.int64)
-    # Pair them
-    indices = tf.stack([positive_roi_ix, positive_roi_class_ids], axis=1)
-
-    # Gather the deltas (predicted and true) that contribute to loss
-    # Use the indeces to get the gt_bbox
-    target_bbox = tf.gather(target_bbox, positive_roi_ix)
-    # And the predicted ones
-    pred_bbox = tf.gather_nd(pred_bbox, indices)
-
-    # Smooth-L1 Loss (switch: condition, if expression, else expression)
-    loss = K.switch(tf.size(target_bbox) > 0,
-                    smooth_l1_loss(y_true=target_bbox, y_pred=pred_bbox),
-                    tf.constant(0.0))
-    
-    loss = K.mean(loss)
-    return loss
 
 ###############################
 # NMS & BBOX REFINEMENT LAYER #
@@ -683,7 +646,6 @@ class DetectionTargetLayer(KL.Layer):
 
         # Now we use the crop_and_resize function which is basically tensorflow's implementation of 
         # the ROIAlign method. 
-        # TODO: Talk about ROIAlign and crop_and_resize.
         masks = tf.image.crop_and_resize(tf.cast(roi_masks, tf.float32),
                                          boxes, 
                                          box_ids,
@@ -730,12 +692,173 @@ class DetectionTargetLayer(KL.Layer):
     def compute_mask(self, inputs, mask=None):
         return [None, None, None, None]
 
+###########################
+###   DETECTION LAYER   ###
+###########################
+
+class DetectionLayer(KL.Layer):
+    """Takes classified proposal boxes, their bounding box deltas and
+    returns the final detection boxes computed by applying the deltas.
+
+    Returns:
+    [batch, num_detections, (y1, x1, y2, x2, class_id, class_score)] where
+    coordinates are normalized.
+    """
+
+    def __init__(self, config=None, **kwargs):
+        super(DetectionLayer, self).__init__(**kwargs)
+        self.config = config
+
+    def call(self, inputs):
+        # Extract inputs
+        rois = inputs[0]
+        mrcnn_class = inputs[1]
+        mrcnn_deltas = inputs[2]
+        image_meta = inputs[3]
+
+        # Get windows of images in normalized coordinates. Windows are the area
+        # in the image that excludes the padding.
+        # Use the shape of the first image in the batch to normalize the window
+        # because we know that all images get resized to the same size.
+        m = parse_image_meta_graph(image_meta)
+        image_shape = m['image_shape'][0]
+        window = norm_boxes_tf(m['window'], image_shape[:2])
+
+        # Run detection refinement graph on each item in the batch
+        outputs = []
+        for i in range(self.config.BATCH_SIZE):
+            output_slice = [self.refine_detections_graph(rois[i], mrcnn_class[i],
+                                                        mrcnn_deltas[i], window[i])]
+            outputs.append(output_slice)
+
+        # Then, change from a list of slices containing outputs to
+        # a list of outputs containing slices.
+        # In other words, group together outputs by their significance rather than
+        # their position in the batch
+        outputs = list(zip(*outputs))
+        # Stack in a single tensor this list of lists, giving the desired name
+        # to each tensor.
+        detections_batch = [tf.stack(o, axis=0) for o in outputs]
+
+        # Reshape output
+        # [batch, num_detections, (y1, x1, y2, x2, class_id, class_score)] in
+        # normalized coordinates
+        return tf.reshape(
+            detections_batch,
+            [self.config.BATCH_SIZE, self.config.DETECTION_MAX_INSTANCES, 6])
+
+    @tf.function
+    def refine_detections_graph(self, rois, probs, deltas, window):
+        """Refine classified proposals and filter overlaps and return final
+        detections.
+
+        Inputs:
+            rois: [N, (y1, x1, y2, x2)] in normalized coordinates
+            probs: [N, num_classes]. Class probabilities.
+            deltas: [N, num_classes, (dy, dx, log(dh), log(dw))]. Class-specific
+                    bounding box deltas.
+            window: (y1, x1, y2, x2) in normalized coordinates. The part of the image
+                that contains the image excluding the padding.
+
+        Returns detections shaped: [num_detections, (y1, x1, y2, x2, class_id, score)] where
+            coordinates are normalized.
+        """
+        # TODO: can this function be rewritten to deal with batches automatically?
+
+        # Class IDs per ROI
+        class_ids = tf.math.argmax(probs, axis=1, output_type=tf.int32)
+        # Class probability of the top class of each ROI
+        class_scores = tf.math.reduce_max(probs, axis=1)
+        # Class-specific bounding box deltas
+        indices = tf.stack([tf.range(probs.shape[0]), class_ids], axis=1)
+        deltas_specific = tf.gather_nd(deltas, indices)
+        # Apply bounding box deltas
+        # Shape: [1, boxes, (y1, x1, y2, x2)] in normalized coordinates
+        refined_rois = apply_box_deltas_batched(
+            tf.stack([rois]), tf.stack([deltas_specific])) #* config.BBOX_STD_DEV)
+        # Clip boxes to image window
+        refined_rois = tf.squeeze(clip_boxes_batched(tf.stack([refined_rois]), window))
+
+
+        # Filter out background boxes
+        keep = tf.where(class_ids > 0)[:, 0]
+        # Filter out low confidence boxes
+        if self.config.DETECTION_MIN_CONFIDENCE:
+            conf_keep = tf.where(class_scores >= self.config.DETECTION_MIN_CONFIDENCE)[:, 0]
+            keep = tf.sets.intersection(tf.expand_dims(keep, 0),
+                                        tf.expand_dims(conf_keep, 0))
+            keep = tf.sparse.to_dense(keep)[0]
+
+        # Apply per-class NMS
+        # 1. Prepare variables
+        pre_nms_class_ids = tf.gather(class_ids, keep)
+        pre_nms_scores = tf.gather(class_scores, keep)
+        pre_nms_rois = tf.gather(refined_rois,   keep)
+        unique_pre_nms_class_ids = tf.unique(pre_nms_class_ids)[0]
+
+        def nms_keep_map(class_id):
+            """Apply Non-Maximum Suppression on ROIs of the given class, so
+                that we don't obtain a lot of boxes of the same class"""
+            # Indices of ROIs of the given class
+            ixs = tf.where(tf.equal(pre_nms_class_ids, class_id))[:, 0]
+            # Apply NMS
+            class_keep = tf.image.non_max_suppression(
+                    tf.gather(pre_nms_rois, ixs),
+                    tf.gather(pre_nms_scores, ixs),
+                    max_output_size=self.config.DETECTION_MAX_INSTANCES,
+                    iou_threshold=self.config.DETECTION_NMS_THRESHOLD)
+            # Map indices
+            class_keep = tf.gather(keep, tf.gather(ixs, class_keep))
+            # Pad with -1 so returned tensors have the same shape
+            # How many "remaining" detections are there?
+            gap = self.config.DETECTION_MAX_INSTANCES - tf.shape(class_keep)[0]
+            class_keep = tf.pad(class_keep, [(0, gap)],
+                                mode='CONSTANT', constant_values=-1)
+            # Set shape so map_fn() can infer result shape
+            class_keep.set_shape([self.config.DETECTION_MAX_INSTANCES])
+            return class_keep
+
+        # 2. Map over class IDs, so to obtain a tensor of DETECTION_MAX_INSTANCES
+        #       boxes for each unique class.
+        nms_keep = tf.map_fn(nms_keep_map, unique_pre_nms_class_ids,
+                            dtype=tf.int64)
+        # 3. Merge results into one list, and remove -1 padding
+        nms_keep = tf.reshape(nms_keep, [-1])
+        nms_keep = tf.gather(nms_keep, tf.where(nms_keep > -1)[:, 0])
+        # 4. Compute intersection between keep and nms_keep
+        keep = tf.sets.intersection(tf.expand_dims(keep, 0),
+                                    tf.expand_dims(nms_keep, 0))
+        keep = tf.sparse.to_dense(keep)[0]
+        # Keep top k detections (the minimum between the detections we have and
+        #   the max amount of detections.)
+        roi_count = self.config.DETECTION_MAX_INSTANCES
+        class_scores_keep = tf.gather(class_scores, keep)
+        num_keep = tf.minimum(tf.shape(class_scores_keep)[0], roi_count)
+        top_ids = tf.nn.top_k(class_scores_keep, k=num_keep, sorted=True)[1]
+        keep = tf.gather(keep, top_ids)
+
+        # Arrange output as [N, (y1, x1, y2, x2, class_id, score)]
+        # Keep in mind that coordinates are normalized.
+        detections = tf.concat([
+            tf.gather(refined_rois, keep),
+            tf.cast((tf.gather(class_ids, keep))[..., tf.newaxis], tf.float32),
+            tf.gather(class_scores, keep)[..., tf.newaxis]
+            ], axis=1)
+
+        # Pad with zeros if detections < DETECTION_MAX_INSTANCES
+        gap = self.config.DETECTION_MAX_INSTANCES - tf.shape(detections)[0]
+        detections = tf.pad(detections, [(0, gap), (0, 0)], "CONSTANT")
+        return detections
+
+    def compute_output_shape(self, input_shape):
+        return (None, self.config.DETECTION_MAX_INSTANCES, 6)
+
 ###################
 # ROI ALIGN LAYER #
 ###################
 
-class PyramidROIAlign(KL):
-    """Implements ROI Pooling on multiple levels of the feature pyramid.
+class PyramidROIAlign(KL.Layer):
+    """Implements ROI Align on multiple levels of the feature pyramid.
     Params:
     - pool_shape: [pool_height, pool_width] of the output pooled regions. Usually [7, 7]
     Inputs:
@@ -751,7 +874,7 @@ class PyramidROIAlign(KL):
     constructor.
     """
 
-    def __init__(self, pool_shape, config:ModelConfig, **kwargs):
+    def __init__(self, pool_shape, **kwargs):
         super(PyramidROIAlign, self).__init__(**kwargs)
         self.pool_shape = tuple(pool_shape)
 
@@ -772,19 +895,19 @@ class PyramidROIAlign(KL):
         w = x2 - x1
 
         # Use shape of first image. Images in a batch must have the same size.
-        image_shape = input_image[0].shape # it could also be ".input_shape" depending on the tensorflow version
+        image_shape = tf.shape(input_image[0])
 
         # All of this is done in order to connect each ROI with the best feature map, wrt its dimensions
         # We use equation 1 in the Feature Pyramid Networks paper. https://arxiv.org/pdf/1612.03144.pdf
         # Account for the fact that our coordinates are normalized here ().
         # e.g. a 224x224 ROI (in pixels) maps to P4 --> so k0 (in the formula) is set to 4
         image_area = tf.cast(image_shape[0] * image_shape[1], tf.float32)
-        roi_level = utils.log2_graph(tf.sqrt(h * w * image_area) / 224.0)
+        roi_level = log2_graph(tf.sqrt(h * w * image_area) / 224.0)
         roi_level = tf.minimum(5, tf.maximum(
             2, 4 + tf.cast(tf.round(roi_level), tf.int32)))
         roi_level = tf.squeeze(roi_level, 2) # for each box
 
-        # Loop through levels and apply ROI pooling to each. P2 to P5.
+        # Loop through levels and apply ROI align to each. P2 to P5.
         pooled = []
         box_to_level = []
         for i, level in enumerate(range(2, 6)): # ((0,2), (1,3), (2,4), (3,5))
@@ -1029,14 +1152,16 @@ class RPN():
                                         "For example, use 256, 320, 384, 448, 512, ... etc. ")
 
         # Define inputs
-        # The first input is of course the input image
+        # The first input is of course composed by the input images
         input_image = KL.Input(
             shape=self.config.IMAGE_SHAPE, name='input_image'
         )
-        # And the informations about the image --> A LOT OF INFORMATIONS, do we need them? TODO
+
+        # The second input is the metadata regarding the input images
+        # We need them because they contain information about how the image has been
+        # transformed via preprocesing (eg. what part of the image is padding and what isn't).
         input_image_meta = KL.Input(shape=[self.config.IMAGE_META_SIZE],
-            name="input_image_meta"
-        )
+                                    name="input_image_meta")
 
         # If we are training the network, we need the groundtruth rpn matches (1 or 0) 
         # and bounding boxes as well as the detections groundtruth 
@@ -1219,11 +1344,11 @@ class RPN():
 
             # First head is the classification head
             # As outputs it will give logits and probabilities, togheter with the box
-            mrcnn_class_logits, mrcnn_class, mrcnn_bbox =\
+            mrcnn_class_logits, mrcnn_class, mrcnn_deltas =\
                  fpn_classifier_graph(rois, mrcnn_feature_maps, input_image,
                                      self.config.POOL_SIZE, self.config.NUM_CLASSES,
                                      train_bn=self.config.TRAIN_BN,
-                                     fc_layers_size= self.config.FPN_CLASSIF_LAYERS_SIZE)
+                                     layers_size= self.config.FPN_CLASSIF_LAYERS_SIZE)
 
             # TODO: add fpn mask graph
 
@@ -1235,25 +1360,43 @@ class RPN():
             rpn_bbox_loss = KL.Lambda(lambda x: rpn_box_regression_loss_graph(*x), name="rpn_bbox_loss")(
                 [self.config.BATCH_SIZE, input_rpn_bbox, input_rpn_match, rpn_deltas])
 
-            # Classification and box losses (why do you use TARGET_CLASS_IDS and not MRCNN_CLASS?? TODO)
+            # TODO: do these work??
+            # 3. Compute classification and box losses (why do you use TARGET_CLASS_IDS and not MRCNN_CLASS?? TODO)
             class_loss = KL.Lambda(lambda x: mrcnn_class_loss_graph(*x), name="mrcnn_class_loss")(
                 [target_class_ids, mrcnn_class_logits])
-
             bbox_loss = KL.Lambda(lambda x: mrcnn_bbox_loss_graph(*x), name="mrcnn_bbox_loss")(
-                [target_deltas, target_class_ids, mrcnn_bbox])
+                [target_deltas, target_class_ids, mrcnn_deltas])
 
+
+            # TODO: Add mask loss
+
+            # TODO: link losses to the model
             # Model
-            inputs = [input_image, input_rpn_match, input_rpn_bbox, input_gt_class_ids,
-                input_gt_boxes, input_gt_masks]
+            inputs = [input_image, input_image_meta, input_rpn_match, input_rpn_bbox, 
+                    input_gt_class_ids, input_gt_boxes, input_gt_masks]
             outputs = [rpn_class_logits, rpn_classes, rpn_deltas,
                 rpn_rois, output_rois, rpn_class_loss, rpn_bbox_loss]
 
         elif self.mode == 'inference':
-            inputs = [input_image, anchors]
-            outputs = [rpn_classes, rpn_rois]
 
-        # TODO: Add MaskRCNN's classification and regression heads.
+            # First head is the classification head
+            # As outputs it will give logits and probabilities, togheter with the box deltas
+            mrcnn_class_logits, mrcnn_class, mrcnn_deltas =\
+                 fpn_classifier_graph(rpn_rois, mrcnn_feature_maps, input_image,
+                                     self.config.POOL_SIZE, self.config.NUM_CLASSES,
+                                     train_bn=self.config.TRAIN_BN,
+                                     layers_size= self.config.FPN_CLASSIF_LAYERS_SIZE)
 
+            # Detections
+            # Output is [batch, num_detections, (y1, x1, y2, x2, class_id, score)] in
+            # normalized coordinates
+            detections = DetectionLayer(self.config, name="mrcnn_detection")(
+                [rpn_rois, mrcnn_class, mrcnn_deltas, input_image_meta])
+
+            # TODO: Add masks
+
+            inputs = [input_image, input_image_meta, anchors]
+            outputs = [rpn_classes, rpn_rois, detections]
 
 
         # Finally, instantiate the Keras model. We have created a custom class
@@ -1277,7 +1420,9 @@ class RPN():
             - rpn_classes: the classes (fg/bg) predicted by the RPN and their probabilities
             - rpn_boxes: the boxes predicted by the RPN
         '''
-        preprocessed_images, windows = utils.preprocess_inputs(images, self.config)
+        preprocessed_images, image_metas = utils.preprocess_inputs(images, self.config)
+        # Extract windows for easier access
+        windows = utils.parse_image_meta(image_metas)['window']
 
         # Check that all images in the batch now have the same size
         image_shape = preprocessed_images[0].shape
@@ -1295,10 +1440,30 @@ class RPN():
         anchors = np.broadcast_to(anchors, (self.config.BATCH_SIZE,) + anchors.shape)
 
         # Use the previously instantiated model to run prediction
-        rpn_classes, rpn_bboxes = self.model.predict([preprocessed_images, anchors])
+        rpn_classes, rpn_bboxes, predictions = \
+            self.model.predict([preprocessed_images, image_metas, anchors])
+
+        # TODO: POSTPROCESSING OF DETECTIONS
+        # # Process detections
+        # results = []
+        # for i, image in enumerate(images):
+        #     final_rois, final_class_ids, final_scores, final_masks =\
+        #         self.unmold_detections(detections[i], mrcnn_mask[i],
+        #                                image.shape, molded_images[i].shape,
+        #                                windows[i])
+        #     results.append({
+        #         "rois": final_rois,
+        #         "class_ids": final_class_ids,
+        #         "scores": final_scores,
+        #         "masks": final_masks,
+        #     })
+        # return results
+
+        # TODO: It looks like for now all bboxes are 0. 
+        #       Is this a mistake or is it just because of random weights?
 
         # Return the preprocessed images, anchors, classifications and bounding boxes from the RPN
-        return preprocessed_images, rpn_classes, rpn_bboxes
+        return preprocessed_images, rpn_classes, rpn_bboxes, predictions
 
 
     def get_anchors(self, image_shape):
@@ -1608,6 +1773,8 @@ def rpn_box_regression_loss_graph(batch_size, target_deltas, rpn_match, rpn_bbox
     loss = K.switch(tf.size(loss) > 0, K.mean(loss), tf.constant(0.0))
     return loss
 
+
+@tf.function
 def mrcnn_class_loss_graph(target_class_ids, pred_class_logits):
     """Loss for the classifier head of Mask RCNN.
     target_class_ids: [batch, num_rois]. Integer class IDs. Uses zero
@@ -1636,17 +1803,42 @@ def mrcnn_class_loss_graph(target_class_ids, pred_class_logits):
     return loss
 
 
-def smooth_l1_loss(y_true, y_pred):
-    """Implements Smooth-L1 loss.
-    0.5*(x-y)^2  if  abs(x-y)<1
-    abs(x-y)-0.5 otherwise
-    y_true and y_pred are typically: [N, 4], but could be any shape.
+@tf.function
+def mrcnn_bbox_loss_graph(target_bbox, target_class_ids, pred_bbox):
     """
-    diff = K.abs(y_true - y_pred)
-    # mask that tells which pair is less distant than one
-    less_than_one = K.cast(K.less(diff, 1.0), "float32")
-    # less_than_one is the first expression, 1-less_than_one is the second
-    loss = (less_than_one * 0.5 * diff**2) + (1 - less_than_one) * (diff - 0.5)
+    Loss for Mask R-CNN bounding box refinement.
+        target_bbox: [batch, num_rois, (dy, dx, log(dh), log(dw))]
+        target_class_ids: [batch, num_rois]. Integer class IDs.
+        pred_bbox: [batch, num_rois, num_classes, (dy, dx, log(dh), log(dw))]
+    """
+    # Reshape to merge batch and roi dimensions for simplicity.
+    target_bbox = K.reshape(target_bbox, (-1, 4))
+    target_class_ids = K.reshape(target_class_ids, (-1,))
+    pred_bbox = K.reshape(pred_bbox, (-1, K.int_shape(pred_bbox)[2], 4))
+
+    # Only positive ROIs contribute to the loss. And only
+    # the right class_id of each ROI. 
+    # Get their indices.
+    positive_roi_ix = tf.where(target_class_ids > 0)[:, 0]
+    # Get the ids
+    positive_roi_class_ids = tf.cast(
+        tf.gather(target_class_ids, positive_roi_ix), tf.int64)
+    # Pair them
+    indices = tf.stack([positive_roi_ix, positive_roi_class_ids], axis=1)
+
+    # Gather the deltas (predicted and true) that contribute to loss
+    # Use the indeces to get the gt_bbox
+    target_bbox = tf.gather(target_bbox, positive_roi_ix)
+    # And the predicted ones
+    pred_bbox = tf.gather_nd(pred_bbox, indices)
+
+    smooth_l1_loss = KLS.Huber()
+    # Smooth-L1 Loss (switch: condition, if expression, else expression)
+    loss = K.switch(tf.size(target_bbox) > 0,
+                    smooth_l1_loss(y_true=target_bbox, y_pred=pred_bbox),
+                    tf.constant(0.0))
+    
+    loss = K.mean(loss)
     return loss
 
 #####################################
@@ -1683,27 +1875,6 @@ class BatchNorm(KL.BatchNormalization):
             True: (don't use). Set layer in training mode even when making inferences
         """
         return super(self.__class__, self).call(inputs, training=training)
-
-def parse_image_meta_graph(meta):
-    """Parses a tensor that contains image attributes to its components.
-    See compose_image_meta() for more details.
-    meta: [batch, meta length] where meta length depends on NUM_CLASSES
-    Returns a dict of the parsed tensors.
-    """
-    image_id = meta[:, 0]
-    original_image_shape = meta[:, 1:4]
-    image_shape = meta[:, 4:7]
-    window = meta[:, 7:11]  # (y1, x1, y2, x2) window of image in in pixels
-    scale = meta[:, 11]
-    active_class_ids = meta[:, 12:] # all of the ids available
-    return {
-        "image_id": image_id,
-        "original_image_shape": original_image_shape,
-        "image_shape": image_shape,
-        "window": window,
-        "scale": scale,
-        # "active_class_ids": active_class_ids, # not really needed anymore
-    }
 
 @tf.function
 def trim_zeros_tf(boxes, name='trim_zeros'):
@@ -1785,9 +1956,32 @@ def calculate_overlaps_matrix_tf(boxes1, boxes2):
     overlaps = tf.reshape(iou, [tf.shape(boxes1)[0], tf.shape(boxes2)[0]])
     return overlaps
 
-#####################
-##  CODE CEMETERY  ##
-#####################
+@tf.function
+def log2_graph(x):
+    """Implementation of Log2. TF doesn't have a native implementation."""
+    return tf.math.log(x) / tf.math.log(2.0)
+
+@tf.function
+def parse_image_meta_graph(meta):
+    """Parses a tensor that contains image attributes to its components.
+    See compose_image_meta() for more details.
+
+    meta: [batch, meta length] where meta length depends on NUM_CLASSES
+
+    Returns a dict of the parsed tensors.
+    """
+    image_id = meta[:, 0]
+    original_image_shape = meta[:, 1:4]
+    image_shape = meta[:, 4:7]
+    window = meta[:, 7:11]  # (y1, x1, y2, x2) window of image in in pixels
+    scale = meta[:, 11]
+    return {
+        "image_id": image_id,
+        "original_image_shape": original_image_shape,
+        "image_shape": image_shape,
+        "window": window,
+        "scale": scale
+    }
 
 def norm_boxes_tf(boxes, shape):
     '''
