@@ -904,14 +904,6 @@ def build(mode):
         name='ROI_refinement')([rpn_classes, rpn_deltas, anchors])
 
     if mode == 'training':
-        # We need to specify which are the class IDs the dataset supports
-        # We haven't explored the dataset correctly yet, so we'll skip this
-        # part for now
-
-        # TODO: this is needed for the computation of the classification loss.
-        #active_class_ids = KL.Lambda(
-        #    lambda x: parse_image_meta_graph(x)["active_class_idx"]
-        #)(input_image_meta)
 
         # Generate some target proposals among the set of ROIs we have generated
         # earlier in the network. These target proposals represent the target output
