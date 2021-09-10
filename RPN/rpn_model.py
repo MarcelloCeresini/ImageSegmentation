@@ -179,17 +179,17 @@ def build_rpn_model(anchor_stride, anchors_per_location, depth):
 def fpn_classifier_graph(rois, feature_maps, input_image,
                          pool_size, num_classes, train_bn=True,
                          layers_size=1024):
-    """Builds the computation graph of the classifier
-    rois: [batch, num_rois, (y1, x1, y2, x2)] Proposal boxes in normalized
-          coordinates, as given by the RPN
-    feature_maps: List of feature maps from different layers of the backbone,
-                  [P2, P3, P4, P5]. Each has a different resolution.
-    input_image: [batch, (image_data)] Image details, given as first input to the model
-
-    pool_size: The width of the square feature map generated from ROI Align
-    num_classes: number of classes, which determines the depth of the results
-    train_bn: Boolean. Train or freeze Batch Norm layers
-    fc_layers_size: Size of the 2 FC layers
+    """
+    Builds the computation graph of the classifier
+        rois: [batch, num_rois, (y1, x1, y2, x2)] Proposal boxes in normalized
+              coordinates, as given by the RPN
+        feature_maps: List of feature maps from different layers of the backbone,
+                      [P2, P3, P4, P5]. Each has a different resolution.
+        input_image: [batch, (image_data)] Image details, given as first input to the model
+        pool_size: The width of the square feature map generated from ROI Align
+        num_classes: number of classes, which determines the depth of the results
+        train_bn: Boolean. Train or freeze Batch Norm layers
+        fc_layers_size: Size of the 2 FC layers
     Returns:
         logits: [batch, num_rois, NUM_CLASSES] classifier logits (before softmax)
         probs: [batch, num_rois, NUM_CLASSES] classifier probabilities
@@ -232,6 +232,60 @@ def fpn_classifier_graph(rois, feature_maps, input_image,
     mrcnn_bbox = KL.Reshape((s[1], num_classes, 4), name="mrcnn_bbox")(x)
 
     return mrcnn_class_logits, mrcnn_probs, mrcnn_bbox
+
+
+def fpn_mask_graph(rois, feature_maps, input_image,
+                         pool_size, num_classes, train_bn=True):
+    """
+    Builds the computation graph of the mask head of Feature Pyramid Network.
+        rois: [batch, num_rois, (y1, x1, y2, x2)] Proposal boxes in normalized
+              coordinates.
+        feature_maps: List of feature maps from different layers of the pyramid,
+                      [P2, P3, P4, P5]. Each has a different resolution.
+        input_image: [batch, (image_data)] Image details, given as first input to the model
+        pool_size: The width of the square feature map generated from ROI Align.
+        num_classes: number of classes, which determines the depth of the results
+        train_bn: Boolean. Train or freeze Batch Norm layers
+    Returns: 
+        Masks [batch, num_rois, MASK_POOL_SIZE, MASK_POOL_SIZE, NUM_CLASSES]
+    """
+    # ROI Align
+    # Shape: [batch, num_rois, MASK_POOL_SIZE, MASK_POOL_SIZE, channels]
+    x = PyramidROIAlign([pool_size, pool_size],
+                        name="roi_align_mask")([rois, input_image] + feature_maps)
+
+    # Conv layers TODO improvable? doesn't seem a really good NN
+    # 1
+    x = KL.TimeDistributed(KL.Conv2D(256, (3, 3), padding="same"),
+                           name="mrcnn_mask_conv1")(x)
+    x = KL.TimeDistributed(BatchNorm(),
+                           name='mrcnn_mask_bn1')(x, training=train_bn)
+    x = KL.Activation('relu')(x)
+    # 2
+    x = KL.TimeDistributed(KL.Conv2D(256, (3, 3), padding="same"),
+                           name="mrcnn_mask_conv2")(x)
+    x = KL.TimeDistributed(BatchNorm(),
+                           name='mrcnn_mask_bn2')(x, training=train_bn)
+    x = KL.Activation('relu')(x)
+    # 3
+    x = KL.TimeDistributed(KL.Conv2D(256, (3, 3), padding="same"),
+                           name="mrcnn_mask_conv3")(x)
+    x = KL.TimeDistributed(BatchNorm(),
+                           name='mrcnn_mask_bn3')(x, training=train_bn)
+    x = KL.Activation('relu')(x)
+    # 4
+    x = KL.TimeDistributed(KL.Conv2D(256, (3, 3), padding="same"),
+                           name="mrcnn_mask_conv4")(x)
+    x = KL.TimeDistributed(BatchNorm(),
+                           name='mrcnn_mask_bn4')(x, training=train_bn)
+    x = KL.Activation('relu')(x)
+    # 5
+    x = KL.TimeDistributed(KL.Conv2DTranspose(256, (2, 2), strides=2, activation="relu"),
+                           name="mrcnn_mask_deconv")(x)
+    x = KL.TimeDistributed(KL.Conv2D(num_classes, (1, 1), strides=1, activation="sigmoid"),
+                           name="mrcnn_mask")(x)
+    return x
+
 
 ###############################
 # NMS & BBOX REFINEMENT LAYER #
@@ -1350,7 +1404,9 @@ class RPN():
                                      train_bn=self.config.TRAIN_BN,
                                      layers_size= self.config.FPN_CLASSIF_LAYERS_SIZE)
 
-            # TODO: add fpn mask graph
+            mrcnn_mask = fpn_mask_graph(rois, mrcnn_feature_maps, input_image,
+                                        self.config.MASK_POOL_SIZE, self.config.NUM_CLASSES,
+                                        train_bn=self.config.TRAIN_BN)
 
             # RPN losses:
             # 1. Compute loss for the classification BG/FG.
@@ -1366,16 +1422,19 @@ class RPN():
                 [target_class_ids, mrcnn_class_logits])
             bbox_loss = KL.Lambda(lambda x: mrcnn_bbox_loss_graph(*x), name="mrcnn_bbox_loss")(
                 [target_deltas, target_class_ids, mrcnn_deltas])
-
-
-            # TODO: Add mask loss
+            
+            # 4. Compute mask loss
+            mask_loss = KL.Lambda(lambda x: mrcnn_mask_loss_graph(*x), name="mrcnn_mask_loss")(
+                [target_mask, target_class_ids, mrcnn_mask])
 
             # TODO: link losses to the model
             # Model
             inputs = [input_image, input_image_meta, input_rpn_match, input_rpn_bbox, 
                     input_gt_class_ids, input_gt_boxes, input_gt_masks]
             outputs = [rpn_class_logits, rpn_classes, rpn_deltas,
-                rpn_rois, output_rois, rpn_class_loss, rpn_bbox_loss]
+                mrcnn_class_logits, mrcnn_class, mrcnn_deltas, mrcnn_mask,
+                rpn_rois, output_rois, 
+                rpn_class_loss, rpn_bbox_loss, class_loss, bbox_loss, mask_loss]
 
         elif self.mode == 'inference':
 
@@ -1838,6 +1897,48 @@ def mrcnn_bbox_loss_graph(target_bbox, target_class_ids, pred_bbox):
                     smooth_l1_loss(y_true=target_bbox, y_pred=pred_bbox),
                     tf.constant(0.0))
     
+    loss = K.mean(loss)
+    return loss
+
+@tf.function
+def mrcnn_mask_loss_graph(target_masks, target_class_ids, pred_masks):
+    """Mask binary cross-entropy loss for the masks head.
+    target_masks: [batch, num_rois, height, width].
+        A float32 tensor of values 0 or 1. Uses zero padding to fill array.
+    target_class_ids: [batch, num_rois]. Integer class IDs. Zero padded.
+    pred_masks: [batch, proposals, height, width, num_classes] float32 tensor
+                with values from 0 to 1.
+    """
+    # Reshape for simplicity. Merge first two dimensions into one.
+    target_class_ids = K.reshape(target_class_ids, (-1,))
+
+    mask_shape = tf.shape(target_masks)
+    target_masks = K.reshape(target_masks, (-1, mask_shape[2], mask_shape[3]))
+
+    pred_shape = tf.shape(pred_masks)
+    pred_masks = K.reshape(pred_masks, (-1, pred_shape[2], pred_shape[3], pred_shape[4]))
+    # Permute predicted masks to [N, num_classes, height, width]
+    pred_masks = tf.transpose(pred_masks, [0, 3, 1, 2])
+
+    # Only positive ROIs contribute to the loss. And only
+    # the class specific mask of each ROI.
+    positive_ix = tf.where(target_class_ids > 0)[:, 0]
+    positive_class_ids = tf.cast(
+        tf.gather(target_class_ids, positive_ix), tf.int64)
+    # Create a tensor with indices and correspective ids because in pred_masks
+    # you will need to retrieve not only the right roi, but also the right class mask
+    # so you need both the index of the roi and the class id
+    indices = tf.stack([positive_ix, positive_class_ids], axis=1)
+
+    # Gather the masks (predicted and true) that contribute to loss
+    y_true = tf.gather(target_masks, positive_ix)
+    y_pred = tf.gather_nd(pred_masks, indices)
+
+    # Compute binary cross entropy. If no positive ROIs, then return 0.
+    # shape: [batch, roi, num_classes]
+    loss = K.switch(tf.size(y_true) > 0,
+                    K.binary_crossentropy(target=y_true, output=y_pred),
+                    tf.constant(0.0))
     loss = K.mean(loss)
     return loss
 
