@@ -1,5 +1,3 @@
-# TODO: ADD TRAINING CODE
-# TODO: Add the rest of Mask-RCNN
 # TODO: Fix some comments in functions (mostly add output shapes and stuff)
 # TODO: Possibly change the way some layers/functions work
 
@@ -445,7 +443,7 @@ class RefinementLayer(KL.Layer):
         boxes = apply_box_deltas_batched(pre_nms_anchors, deltas)
         # Clip to image boundaries (in normalized coordinates, clip in 0..1 range)
         window = np.array([0, 0, 1, 1], dtype=np.float32)
-        ### Probably cllipping isn't needed, uncomment if needed
+        ### Probably clipping isn't needed, uncomment if needed
         # boxes = clip_boxes_batched(boxes, window)
         # Apply non maximum suppression using tensorflow's implementation of a batched NMS
         nmsed_boxes, nmsed_scores, _, _ = tf.image.combined_non_max_suppression(
@@ -830,9 +828,13 @@ class DetectionLayer(KL.Layer):
         # Apply bounding box deltas
         # Shape: [1, boxes, (y1, x1, y2, x2)] in normalized coordinates
         refined_rois = apply_box_deltas_batched(
-            tf.stack([rois]), tf.stack([deltas_specific])) #* config.BBOX_STD_DEV)
+            tf.expand_dims(rois, axis=0), 
+            tf.expand_dims(deltas_specific, axis=0) #* config.BBOX_STD_DEV)
+        )
         # Clip boxes to image window
-        refined_rois = tf.squeeze(clip_boxes_batched(tf.stack([refined_rois]), window))
+        refined_rois = tf.squeeze(clip_boxes_batched(
+            refined_rois, tf.cast(window, tf.float32))
+        )
 
 
         # Filter out background boxes
