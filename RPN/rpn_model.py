@@ -825,6 +825,7 @@ class DetectionLayer(KL.Layer):
         class_scores = tf.math.reduce_max(probs, axis=1)
         # Class-specific bounding box deltas
         indices = tf.stack([tf.range(probs.shape[0]), class_ids], axis=1)
+        # for each roi gather the deltas that are connected to the highest scoring class
         deltas_specific = tf.gather_nd(deltas, indices)
         # Apply bounding box deltas
         # Shape: [1, boxes, (y1, x1, y2, x2)] in normalized coordinates
