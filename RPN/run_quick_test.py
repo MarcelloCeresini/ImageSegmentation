@@ -7,7 +7,7 @@ import matplotlib.pyplot as plt
 import matplotlib.image as mpimg
 from matplotlib.patches import Rectangle
 
-from rpn_model import RPN
+from rpn_model import MaskRCNN
 from food import FoodDataset
 from config import ModelConfig
 from data_generator import DataGenerator
@@ -32,7 +32,7 @@ if gpus:
         print(e)
 
 config = ModelConfig()
-model = RPN('inference', config)
+model = MaskRCNN('inference', config)
 
 # Create the DataLoader to test it.
 if args.test_datagen and os.path.exists(os.path.join('..','data')):

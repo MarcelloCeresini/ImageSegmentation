@@ -31,7 +31,7 @@ from pycocotools.coco import COCO
 from pycocotools.cocoeval import COCOeval
 from pycocotools import mask as maskUtils
 
-from rpn_model import RPN
+from rpn_model import MaskRCNN
 from config import ModelConfig
 import utils_functions as utils
 
@@ -226,7 +226,7 @@ class FoodDataset():
 
         # Pack instance masks into an array
         if class_ids:
-            mask = np.stack(instance_masks, axis=2).astype(np.bool)
+            mask = np.stack(instance_masks, axis=2).astype(bool)
             class_ids = np.array(class_ids, dtype=np.int32)
             return mask, class_ids
         else:
@@ -395,10 +395,10 @@ if __name__ == '__main__':
 
     # Create model
     if args.command == "train":
-        rpn = RPN(mode="training", config=config,
+        rpn = MaskRCNN(mode="training", config=config,
                                   out_dir=args.logs)
     else:
-        rpn = RPN(mode="inference", config=config,
+        rpn = MaskRCNN(mode="inference", config=config,
                                   out_dir=args.logs)
 
     # Select weights file to load

@@ -75,6 +75,11 @@ class DataGenerator(keras.utils.Sequence):
             config.RPN_ANCHOR_STRIDE
         )
 
+        # Flatten the list of accepted classes. 
+        # Save the result, so we only compute it once.
+        # TODO: read below: we may not need this.
+        # self.accepted_classes = utils.flatten(self.config.ACCEPTED_CLASSES_IDS)
+
         self.on_epoch_end()
 
     def __getitem__(self, index):
@@ -86,19 +91,29 @@ class DataGenerator(keras.utils.Sequence):
                 image, image_meta, gt_class_ids, gt_boxes, gt_masks = \
                     self.load_image_gts(image_id) 
 
+                # TODO: the following is a good idea (even though I would keep some
+                # images that have no classes of interest in the training: the model 
+                # should learn to also detect nothing in images where the classes of
+                # interest are not present! Also, there are not many images that have
+                # none of the classes of interest (how many exactly? We should analyze
+                # this).
+
+                # Anyway, we can't do it this way, because we could potentially 
+                # yield empty batches.
+
                 # Skip images that have no instances. This can happen in cases
                 # where we train on a subset of classes and the image doesn't
                 # have any of the classes we care about.
-                if not np.any(gt_class_ids > 0):
-                    continue
+                #if not np.any(gt_class_ids > 0):
+                #    continue
                 
                 # We only want images with accepted classes, we do not keep all classes
                 # So we also skip images that do not contain any annotation that we accepted
                 # "set" is used because intersection is a method of the set class
                 # "flatten" takes a nested list and flattens it
-                intersection = set(gt_class_ids).intersection(utils.flatten(self.config.ACCEPTED_CLASSES_IDS))
-                if intersection == set():
-                    continue
+                #intersection = set(gt_class_ids).intersection(self.accepted_classes)
+                #if intersection == set():
+                #    continue
             
                 # RPN targets
                 rpn_match, rpn_bbox = self.build_rpn_targets(self.anchors,

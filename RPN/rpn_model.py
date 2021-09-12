@@ -204,12 +204,12 @@ def fpn_classifier_graph(rois, feature_maps, input_image,
     x = KL.TimeDistributed(KL.Conv2D(layers_size, (pool_size, pool_size), padding="valid"),
                            name="mrcnn_class_conv1")(x)
     # Oss: when BATCH is SMALL, batchnorm is bad --> write "False" in config if that's the case
-    x = KL.TimeDistributed(BatchNorm(), name='mrcnn_class_bn1')(x, training=train_bn)
+    x = KL.TimeDistributed(KL.BatchNormalization(), name='mrcnn_class_bn1')(x, training=train_bn)
     x = KL.Activation('relu')(x)
     # this time it's just a 1x1 conv2d, you already did the pooling above
     x = KL.TimeDistributed(KL.Conv2D(layers_size, (1, 1)),
                            name="mrcnn_class_conv2")(x)
-    x = KL.TimeDistributed(BatchNorm(), name='mrcnn_class_bn2')(x, training=train_bn)
+    x = KL.TimeDistributed(KL.BatchNormalization(), name='mrcnn_class_bn2')(x, training=train_bn)
     x = KL.Activation('relu')(x)
 
     shared = KL.Lambda(lambda x: K.squeeze(K.squeeze(x, 3), 2),
@@ -226,8 +226,7 @@ def fpn_classifier_graph(rois, feature_maps, input_image,
     x = KL.TimeDistributed(KL.Dense(num_classes * 4, activation='linear'),
                            name='mrcnn_bbox_fc')(shared)
     # Reshape to [batch, num_rois, NUM_CLASSES, (dy, dx, log(dh), log(dw))]
-    s = K.int_shape(x)
-    mrcnn_bbox = KL.Reshape((s[1], num_classes, 4), name="mrcnn_bbox")(x)
+    mrcnn_bbox = KL.Reshape((-1, num_classes, 4), name="mrcnn_bbox")(x)
 
     return mrcnn_class_logits, mrcnn_probs, mrcnn_bbox
 
@@ -256,25 +255,25 @@ def fpn_mask_graph(rois, feature_maps, input_image,
     # 1
     x = KL.TimeDistributed(KL.Conv2D(256, (3, 3), padding="same"),
                            name="mrcnn_mask_conv1")(x)
-    x = KL.TimeDistributed(BatchNorm(),
+    x = KL.TimeDistributed(KL.BatchNormalization(),
                            name='mrcnn_mask_bn1')(x, training=train_bn)
     x = KL.Activation('relu')(x)
     # 2
     x = KL.TimeDistributed(KL.Conv2D(256, (3, 3), padding="same"),
                            name="mrcnn_mask_conv2")(x)
-    x = KL.TimeDistributed(BatchNorm(),
+    x = KL.TimeDistributed(KL.BatchNormalization(),
                            name='mrcnn_mask_bn2')(x, training=train_bn)
     x = KL.Activation('relu')(x)
     # 3
     x = KL.TimeDistributed(KL.Conv2D(256, (3, 3), padding="same"),
                            name="mrcnn_mask_conv3")(x)
-    x = KL.TimeDistributed(BatchNorm(),
+    x = KL.TimeDistributed(KL.BatchNormalization(),
                            name='mrcnn_mask_bn3')(x, training=train_bn)
     x = KL.Activation('relu')(x)
     # 4
     x = KL.TimeDistributed(KL.Conv2D(256, (3, 3), padding="same"),
                            name="mrcnn_mask_conv4")(x)
-    x = KL.TimeDistributed(BatchNorm(),
+    x = KL.TimeDistributed(KL.BatchNormalization(),
                            name='mrcnn_mask_bn4')(x, training=train_bn)
     x = KL.Activation('relu')(x)
     # 5
@@ -760,6 +759,17 @@ class DetectionLayer(KL.Layer):
     def __init__(self, config=None, **kwargs):
         super(DetectionLayer, self).__init__(**kwargs)
         self.config = config
+    
+    def get_config(self):
+        '''
+        To be able to save the model we need to update the configuration
+        for this custom layer by adding the parameters in init.
+        '''
+        config = super().get_config().copy()
+        config.update({
+            'config': self.config
+        })
+        return config
 
     def call(self, inputs):
         # Extract inputs
@@ -1073,7 +1083,7 @@ class MaskRCNNModel(KM.Model):
             #       forward pass -- they don't accumulate. So layer.losses always contain 
             #       only the losses created during the last forward pass. 
             #       You would typically use these losses by summing them before computing 
-            #       your gradients when writing a training loop..
+            #       your gradients when writing a training loop.
             loss = sum(self.losses)
 
             # 4. Backward pass. Update the weights of the model to minimize the loss value.
@@ -1106,7 +1116,7 @@ class MaskRCNNModel(KM.Model):
         }
 
 
-class RPN():
+class MaskRCNN():
     """
     This class encapsulates the RPN model and some of its functionalities.
     The Keras model is contained in the model property.
@@ -1397,8 +1407,6 @@ class RPN():
 
             output_rois = tf.identity(rois, name="output_rois")
 
-            # TODO: Here we should add the network heads: the classifier and the mask graph.
-
             # First head is the classification head
             # As outputs it will give logits and probabilities, togheter with the box
             mrcnn_class_logits, mrcnn_class, mrcnn_deltas =\
@@ -1589,7 +1597,9 @@ class RPN():
         # TODO: does it really need to be so complicated?
 
         # Add losses
-        loss_names = ["rpn_class_loss",  "rpn_bbox_loss"]
+        loss_names = ["rpn_class_loss",  "rpn_bbox_loss", 
+                    "mrcnn_class_loss", "mrcnn_bbox_loss", 
+                    "mrcnn_mask_loss"]
         for name in loss_names:
             # TODO: some commits ago I removed the reset of losses because of errors with the training.
             #       Reapply this (if needed).
@@ -1843,7 +1853,6 @@ def rpn_box_regression_loss_graph(batch_size, target_deltas, rpn_match, rpn_bbox
     loss = K.switch(tf.size(loss) > 0, K.mean(loss), tf.constant(0.0))
     return loss
 
-
 @tf.function
 def mrcnn_class_loss_graph(target_class_ids, pred_class_logits):
     """Loss for the classifier head of Mask RCNN.
@@ -1851,27 +1860,13 @@ def mrcnn_class_loss_graph(target_class_ids, pred_class_logits):
         padding to fill in the array.
     pred_class_logits: [batch, num_rois, num_classes]
     """
-    # During model building, Keras calls this function with
-    # target_class_ids of type float32. Unclear why. Cast it
-    # to int to get around it.
-    target_class_ids = tf.cast(target_class_ids, 'int64')
-
-    # Find predictions of classes that are not in the dataset.
-    pred_class_ids = tf.argmax(pred_class_logits, axis=2)
-
     # Loss
     loss = tf.nn.sparse_softmax_cross_entropy_with_logits(
         labels=target_class_ids, logits=pred_class_logits)
 
-    # Erase losses of predictions of classes that are not in the active
-    # classes of the image.
-    loss = loss * pred_class_ids
-
-    # Computer loss mean. Use only predictions that contribute
-    # to the loss to get a correct mean.
-    loss = tf.reduce_sum(loss) / tf.reduce_sum(pred_class_ids)
+    # Compute loss mean
+    loss = K.switch(tf.size(loss) > 0, K.mean(loss), tf.constant(0.0))
     return loss
-
 
 @tf.function
 def mrcnn_bbox_loss_graph(target_bbox, target_class_ids, pred_bbox):
@@ -1972,21 +1967,6 @@ class NormBoxesLayer(KL.Layer):
         shift = tf.constant([0., 0., 1., 1.])
         return (boxes - shift) / scale
 
-class BatchNorm(KL.BatchNormalization):
-    """Extends the Keras BatchNormalization class to allow a central place
-    to make changes if needed.
-    Batch normalization has a negative effect on training if batches are small
-    so this layer is often frozen (via setting in Config class) and functions
-    as linear layer.
-    """
-    def call(self, inputs, training=None):
-        """
-        Note about training values:
-            None: Train BN layers. This is the normal mode
-            False: Freeze BN layers. Good when batch size is small
-            True: (don't use). Set layer in training mode even when making inferences
-        """
-        return super(self.__class__, self).call(inputs, training=training)
 
 @tf.function
 def trim_zeros_tf(boxes, name='trim_zeros'):
@@ -2048,15 +2028,6 @@ def calculate_overlaps_matrix_tf(boxes1, boxes2):
     x2 = tf.minimum(b1_x2, b2_x2)
     # Calculate the area intersection. Notice that x2-x1 and y2-y1 can be negative
     # if there is no intersection.
-    ################################################################################
-    # intersection = tf.maximum(x2 - x1, 0) * tf.maximum(y2 - y1, 0)
-    # # 3. Compute unions
-    # b1_area = (b1_y2 - b1_y1) * (b1_x2 - b1_x1)
-    # b2_area = (b2_y2 - b2_y1) * (b2_x2 - b2_x1)
-    # union = b1_area + b2_area - intersection
-    # # 4. Compute IoU
-    # iou = intersection / union
-    ################################################################################
     intersection = tf.maximum(tf.subtract(x2, x1), 0) * tf.maximum(tf.subtract(y2, y1), 0)
     # 3. Compute unions
     b1_area = tf.multiply(tf.subtract(b1_y2, b1_y1), tf.subtract(b1_x2, b1_x1))
