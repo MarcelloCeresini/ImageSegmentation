@@ -1200,7 +1200,7 @@ class RPN():
 
     def build(self):
         """
-        Builds the Backbone + RPN model.
+        Builds the Backbone, the RPN model and the detection/mask heads.
         """
         h, w = self.config.IMAGE_SHAPE[:2]
         if h / 2 ** 6 != int(h / 2 ** 6) or w / 2 ** 6 != int(w / 2 ** 6):
@@ -1405,7 +1405,7 @@ class RPN():
                  fpn_classifier_graph(rois, mrcnn_feature_maps, input_image,
                                      self.config.POOL_SIZE, self.config.NUM_CLASSES,
                                      train_bn=self.config.TRAIN_BN,
-                                     layers_size= self.config.FPN_CLASSIF_LAYERS_SIZE)
+                                     layers_size=self.config.FPN_CLASSIF_LAYERS_SIZE)
 
             mrcnn_mask = fpn_mask_graph(rois, mrcnn_feature_maps, input_image,
                                         self.config.MASK_POOL_SIZE, self.config.NUM_CLASSES,
@@ -1419,13 +1419,15 @@ class RPN():
             rpn_bbox_loss = KL.Lambda(lambda x: rpn_box_regression_loss_graph(*x), name="rpn_bbox_loss")(
                 [self.config.BATCH_SIZE, input_rpn_bbox, input_rpn_match, rpn_deltas])
 
-            # TODO: do these work??
+            # MRCNN LOSSES
+            # TODO: does this loss work??
             # 3. Compute classification and box losses (why do you use TARGET_CLASS_IDS and not MRCNN_CLASS?? TODO)
             class_loss = KL.Lambda(lambda x: mrcnn_class_loss_graph(*x), name="mrcnn_class_loss")(
                 [target_class_ids, mrcnn_class_logits])
             bbox_loss = KL.Lambda(lambda x: mrcnn_bbox_loss_graph(*x), name="mrcnn_bbox_loss")(
                 [target_deltas, target_class_ids, mrcnn_deltas])
             
+            # TODO: does this other loss work??
             # 4. Compute mask loss
             mask_loss = KL.Lambda(lambda x: mrcnn_mask_loss_graph(*x), name="mrcnn_mask_loss")(
                 [target_mask, target_class_ids, mrcnn_mask])
@@ -1434,10 +1436,9 @@ class RPN():
             # Model
             inputs = [input_image, input_image_meta, input_rpn_match, input_rpn_bbox, 
                     input_gt_class_ids, input_gt_boxes, input_gt_masks]
-            outputs = [rpn_class_logits, rpn_classes, rpn_deltas,
-                mrcnn_class_logits, mrcnn_class, mrcnn_deltas, mrcnn_mask,
-                rpn_rois, output_rois, 
-                rpn_class_loss, rpn_bbox_loss, class_loss, bbox_loss, mask_loss]
+            outputs = [rpn_class_logits, rpn_classes, rpn_deltas, rpn_rois, output_rois, 
+                    mrcnn_class_logits, mrcnn_class, mrcnn_deltas, mrcnn_mask,
+                    rpn_class_loss, rpn_bbox_loss, class_loss, bbox_loss, mask_loss]
 
         elif self.mode == 'inference':
 
@@ -1455,15 +1456,23 @@ class RPN():
             detections = DetectionLayer(self.config, name="mrcnn_detection")(
                 [rpn_rois, mrcnn_class, mrcnn_deltas, input_image_meta])
 
-            # TODO: Add masks
+            # Create masks for detections
+            # Masks are [batch, num_detections, MASK_POOL_SIZE, MASK_POOL_SIZE, NUM_CLASSES]
+            detection_bboxes = KL.Lambda(lambda det: det[:,:,:4], name='box_extraction')(detections)
+            mrcnn_mask = fpn_mask_graph(detection_bboxes, # We only need to pass detection boxes
+                                        mrcnn_feature_maps,
+                                        input_image,
+                                        self.config.MASK_POOL_SIZE,
+                                        self.config.NUM_CLASSES,
+                                        train_bn=self.config.TRAIN_BN)
 
             inputs = [input_image, input_image_meta, anchors]
-            outputs = [rpn_classes, rpn_rois, detections]
+            outputs = [rpn_classes, rpn_rois, detections, mrcnn_mask]
 
 
         # Finally, instantiate the Keras model. We have created a custom class
         # in order to implement a custom training and validation step.
-        self.model = MaskRCNNModel(inputs, outputs, name='rpn')
+        self.model = MaskRCNNModel(inputs, outputs, name='mask_rcnn')
 
 
     def detect(self, images):
@@ -1472,15 +1481,17 @@ class RPN():
 
         Inputs: 
         - images: a list of images, even of different sizes 
-            (they will be reshaped as zero-padded squares of the same dimensions)
-        - model: the model to run on the image (passed as input because it's easier
-            for testing)
+            (they will be reshaped as zero-padded squares of the same dimensions before
+            being fed to the model)
 
         Outputs:
-            - preprocessed_images: the preprocessed images in a batch
-            - anchors: the anchors for the image
-            - rpn_classes: the classes (fg/bg) predicted by the RPN and their probabilities
-            - rpn_boxes: the boxes predicted by the RPN
+        - A list of dicts, one dict per image. The dict contains:
+            - rpn_boxes: [M, (y1, x1, y2, x2)] calculated RPN boxes
+            - rpn_classes: [M] classes for the RPN boxes
+            - rois: [N, (y1, x1, y2, x2)] detection bounding boxes
+            - class_ids: [N] int class IDs
+            - scores: [N] float probability scores for the class IDs
+            - masks: [H, W, N] instance binary masks
         '''
         preprocessed_images, image_metas = utils.preprocess_inputs(images, self.config)
         # Extract windows for easier access
@@ -1502,31 +1513,28 @@ class RPN():
         anchors = np.broadcast_to(anchors, (self.config.BATCH_SIZE,) + anchors.shape)
 
         # Use the previously instantiated model to run prediction
-        rpn_classes, rpn_bboxes, predictions = \
+        rpn_classes, rpn_bboxes, mrcnn_detections, mrcnn_masks = \
             self.model.predict([preprocessed_images, image_metas, anchors])
 
-        # TODO: POSTPROCESSING OF DETECTIONS
-        # # Process detections
-        # results = []
-        # for i, image in enumerate(images):
-        #     final_rois, final_class_ids, final_scores, final_masks =\
-        #         self.unmold_detections(detections[i], mrcnn_mask[i],
-        #                                image.shape, molded_images[i].shape,
-        #                                windows[i])
-        #     results.append({
-        #         "rois": final_rois,
-        #         "class_ids": final_class_ids,
-        #         "scores": final_scores,
-        #         "masks": final_masks,
-        #     })
-        # return results
+        # Apply post-processing to detections
+        results = []
+        for i, image in enumerate(images):
+            final_rpn_boxes, final_rpn_classes, final_rois, final_class_ids, \
+            final_scores, final_masks = utils.postprocess_detections(rpn_classes[i],
+                        rpn_bboxes[i], mrcnn_detections[i], mrcnn_masks[i], 
+                        image.shape, preprocessed_images[i].shape, 
+                        windows[i]
+            )
 
-        # TODO: It looks like for now all bboxes are 0. 
-        #       Is this a mistake or is it just because of random weights?
-
-        # Return the preprocessed images, anchors, classifications and bounding boxes from the RPN
-        return preprocessed_images, rpn_classes, rpn_bboxes, predictions
-
+            results.append({
+                "rpn_boxes": final_rpn_boxes,
+                "rpn_classes": final_rpn_classes,
+                "rois": final_rois,
+                "class_ids": final_class_ids,
+                "scores": final_scores,
+                "masks": final_masks,
+            })
+        return results
 
     def get_anchors(self, image_shape):
         """
