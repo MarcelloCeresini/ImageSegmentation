@@ -450,6 +450,8 @@ class RefinementLayer(KL.Layer):
                                                 tf.expand_dims(scores,2),
                                                 self.proposal_count, self.proposal_count,
                                                 self.config.RPN_NMS_THRESHOLD)
+        nmsed_boxes = tf.stop_gradient(nmsed_boxes)
+        nmsed_scores = tf.stop_gradient(nmsed_scores)
         # The original code adds padding to these tensors, in case the self.proposal_count
         # requirement is not respected, but this is only required when dealing with very 
         # small images. I think we are fine without it, for now.
@@ -846,7 +848,6 @@ class DetectionLayer(KL.Layer):
             refined_rois, tf.cast(window, tf.float32))
         )
 
-
         # Filter out background boxes
         keep = tf.where(class_ids > 0)[:, 0]
         # Filter out low confidence boxes
@@ -945,6 +946,17 @@ class PyramidROIAlign(KL.Layer):
         super(PyramidROIAlign, self).__init__(**kwargs)
         self.pool_shape = tuple(pool_shape)
 
+    def get_config(self):
+        '''
+        To be able to save the model we need to update the configuration
+        for this custom layer by adding the parameters in init.
+        '''
+        config = super().get_config().copy()
+        config.update({
+            'pool_shape': self.pool_shape
+        })
+        return config
+
     def call(self, inputs):
         # Crop boxes [batch, num_boxes, (y1, x1, y2, x2)] in normalized coords
         boxes = inputs[0]
@@ -988,10 +1000,11 @@ class PyramidROIAlign(KL.Layer):
             # Keep track of which box is mapped to which level
             box_to_level.append(ix)
 
-            # Stop gradient propogation to ROI proposals
+            # TODO: is it really needed?
             # Why?? ##########################################
-            level_boxes = tf.stop_gradient(level_boxes)
-            box_indices = tf.stop_gradient(box_indices)
+            # Stop gradient propogation to ROI proposals
+            #level_boxes = tf.stop_gradient(level_boxes)
+            #box_indices = tf.stop_gradient(box_indices)
 
             # Crop and Resize
             # From Mask R-CNN paper: "We sample four regular locations, so
@@ -1707,11 +1720,11 @@ class MaskRCNN():
         # Select the layers to train using some regex
         layer_regex = {
             # all layers but the backbone
-            "heads": r"(rpn\_.*)|(fpn\_.*)",
+            "heads": r"(mrcnn\_.*)|(rpn\_.*)|(fpn\_.*)",
             # From a specific Resnet stage and up
-            "3+": r"(conv3\_.*)|(conv4\_.*)|(conv5\_.*)|(rpn\_.*)|(fpn\_.*)",
-            "4+": r"(conv4\_.*)|(conv5\_.*)|(rpn\_.*)|(fpn\_.*)",
-            "5+": r"(conv5\_.*)|(rpn\_.*)|(fpn\_.*)",
+            "3+": r"(conv3\_.*)|(conv4\_.*)|(conv5\_.*)|(mrcnn\_.*)|(rpn\_.*)|(fpn\_.*)",
+            "4+": r"(conv4\_.*)|(conv5\_.*)|(mrcnn\_.*)|(rpn\_.*)|(fpn\_.*)",
+            "5+": r"(conv5\_.*)|(mrcnn\_.*)|(rpn\_.*)|(fpn\_.*)",
             # All layers
             "all": ".*",
         }
@@ -2086,3 +2099,8 @@ def denorm_boxes_tf(boxes, shape):
     scale = tf.concat([h, w, h, w], axis=-1) - tf.constant(1.0)  # Concatenate h and w and reduce them all by 1
     shift = tf.constant([0., 0., 1., 1.])
     return tf.cast(tf.round(tf.multiply(boxes, scale) + shift), tf.int32)  # Cast back into pixels
+
+# # No learning for non-max suppression (surprised that it's not already implemented)
+# @tf.RegisterGradient("CombinedNonMaxSuppression")
+# def _nms_grad(op, o1, o2, o3, o4):
+#     return tf.zeros_like(o1), tf.zeros_like(o2),
