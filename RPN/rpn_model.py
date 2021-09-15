@@ -1220,7 +1220,6 @@ class MaskRCNN():
         # Path to save after each epoch. Include a placeholder for the epoch that gets filled by Keras.
         self.checkpoint_path = os.path.join(self.log_dir, "rpn_food_{epoch:04d}.h5")
 
-
     def build(self):
         """
         Builds the Backbone, the RPN model and the detection/mask heads.
@@ -1608,6 +1607,7 @@ class MaskRCNN():
         )
 
         # TODO: does it really need to be so complicated?
+        losses = []
 
         # Add losses
         loss_names = ["rpn_class_loss",  "rpn_bbox_loss", 
@@ -1623,6 +1623,7 @@ class MaskRCNN():
             # Add loss
             self.model.add_loss(loss)
             self.model.add_metric(loss, name=name)
+            losses.append(loss)
 
         # Add L2 Regularization
         # Skip gamma and beta weights of batch normalization layers.
@@ -1642,6 +1643,11 @@ class MaskRCNN():
         These losses are not tracked as part of the model's topology since they can't be serialized.
         '''
         self.model.add_loss(lambda: tf.add_n(reg_losses))
+
+        # We add an additional metric that simply tracks the sum of all losses,
+        # so that we can use it for "saving the best models". 
+        # TODO: instead of a simple sum, we might use a weighted sum?
+        self.model.add_metric(tf.math.reduce_sum(losses), name='global_loss')
 
         # Compile the model
         self.model.compile(
@@ -1685,22 +1691,21 @@ class MaskRCNN():
                     learning_rate, epochs, layers, augmentation=None, 
                     custom_callbacks=None):
         """Train the model.
-        train_dataset, val_dataset: Training and validation datasets.
-        learning_rate: The learning rate to train with
-        epochs: Number of training epochs. Note that previous training epochs
+        - train_dataset, val_dataset: Training and validation datasets.
+        - learning_rate: The learning rate to train with
+        - epochs: Number of training epochs. Note that previous training epochs
                 are considered to be done already, so this actually determines
                 the epochs to train in total rather than in this particaular
                 call.
-        layers: Allows selecting which layers to train. It can be:
+        - layers: Allows selecting which layers to train. It can be:
             - A regular expression to match layer names to train
             - One of these predefined values:
-            heads: Only the RPN and FPN (#TODO: When the rest of the model is added, 
-                                        this should train also the other heads)
-            all: All the layers
-            3+: Train Resnet stage 3 and up
-            4+: Train Resnet stage 4 and up
-            5+: Train Resnet stage 5 and up
-        augmentation: Optional. An imgaug (https://github.com/aleju/imgaug)
+                - heads: Only RPN, FPN, bounding boxes and mask heads
+                - all: All the layers
+                - 3+: Train Resnet stage 3 and up
+                - 4+: Train Resnet stage 4 and up
+                - 5+: Train Resnet stage 5 and up
+        - augmentation: Optional. An imgaug (https://github.com/aleju/imgaug)
             augmentation. For example, passing imgaug.augmenters.Fliplr(0.5)
             flips images right/left 50% of the time. You can pass complex
             augmentations as well. This augmentation applies 50% of the
@@ -1748,6 +1753,7 @@ class MaskRCNN():
             # TODO: We need a metric that is the sum or the average of all losses so that we
             # can keep track of it for saving.
             keras.callbacks.ModelCheckpoint(self.checkpoint_path,
+                                            monitor='val_global_loss',
                                             verbose=0, save_weights_only=True,
                                             save_best_only=True),
         ]
