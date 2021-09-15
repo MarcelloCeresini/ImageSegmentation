@@ -435,31 +435,28 @@ if __name__ == '__main__':
         # TODO we could add other kinds of image augmentations here
 
         # TODO: define a better training schedule
-        # Training - Stage 1
-        print("Training network heads")
-        rpn.train(dataset_train, dataset_val,
-                    learning_rate=config.LEARNING_RATE,
-                    epochs=40,
-                    layers='heads',
-                    augmentation=augmentation)
+        # Add a custom callback that reduces the learning rate during training
+        # after epoch 50
+        def scheduler(epoch, lr):
+            if epoch < 50:
+                return lr
+            else:
+                # Divide lr by 10
+                return lr / 10
 
-        # Training - Stage 2
-        # Finetune layers from ResNet stage 4 and up
-        print("Fine tune Resnet stage 4 and up")
-        rpn.train(dataset_train, dataset_val,
-                    learning_rate=config.LEARNING_RATE,
-                    epochs=120,
-                    layers='4+',
-                    augmentation=augmentation)
+        custom_callbacks = [
+            keras.callbacks.LearningRateScheduler(scheduler)
+        ]
 
-        # Training - Stage 3
         # Fine tune all layers
         print("Fine tune all layers")
         rpn.train(dataset_train, dataset_val,
-                    learning_rate=config.LEARNING_RATE / 10,
-                    epochs=160,
-                    layers='all',
-                    augmentation=augmentation)
+                    learning_rate=config.LEARNING_RATE,
+                    epochs=60,                              # Start soft with 60 epochs
+                    layers='heads',                         # training only the heads
+                    augmentation=augmentation,
+                    custom_callbacks=custom_callbacks)      # Add a custom callback that reduces the learning
+                                                            # rate after some training steps.
 
     elif args.command == "evaluate":
         # Validation dataset
