@@ -1,18 +1,18 @@
-from numpy.lib.arraysetops import ediff1d
-from pycocotools.coco import COCO
-from pycocotools import mask as cocomask
 import numpy as np
+import tensorflow as tf
 import skimage.io as io
 import matplotlib.pyplot as plt
 import pylab
 import random
 import os
 import json
+
 from collections import Counter
+from pycocotools.coco import COCO
+from pycocotools import mask as cocomask
 
 import utils_functions as utils
 from config import ModelConfig
-import tensorflow as tf
 
 config = ModelConfig()
 pylab.rcParams['figure.figsize'] = (8.0, 10.0)
