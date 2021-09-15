@@ -1,15 +1,6 @@
-import numpy as np
-import tensorflow as tf
-import skimage.io as io
-import matplotlib.pyplot as plt
 import pylab
-import random
-import os
 import json
-
-from collections import Counter
-from pycocotools.coco import COCO
-from pycocotools import mask as cocomask
+import os
 
 import utils_functions as utils
 from config import ModelConfig
@@ -17,17 +8,28 @@ from config import ModelConfig
 config = ModelConfig()
 pylab.rcParams['figure.figsize'] = (8.0, 10.0)
 
-data_directory = "data/"
-annotation_file_template = "{}/{}/annotation{}.json"
+data_directory = "data"
+train_dir = "train_original"
+val_dir = "val_original"
+train_out_dir = "train"
+val_out_dir = "val"
+annotations_filename = "annotations.json"
 
-TRAIN_IMAGES_DIRECTORY = "data/train/images"
-TRAIN_ANNOTATIONS_PATH = "data/train/annotations.json"
+# Create directories for output paths just in case
+os.makedirs(os.path.join(data_directory, train_out_dir), exist_ok=True)
+os.makedirs(os.path.join(data_directory, val_out_dir), exist_ok=True)
 
-VAL_IMAGES_DIRECTORY = "data/val/images"
-VAL_ANNOTATIONS_PATH = "data/val/annotations.json"
+TRAIN_IMAGES_DIRECTORY = os.path.join(data_directory, train_dir, "images")
+TRAIN_ANNOTATIONS_PATH = os.path.join(data_directory, train_dir, annotations_filename)
+
+VAL_IMAGES_DIRECTORY = os.path.join(data_directory, val_dir, "images")
+VAL_ANNOTATIONS_PATH = os.path.join(data_directory, val_dir, annotations_filename)
+
+TRAIN_OUT_ANNOTATIONS_PATH =  os.path.join(data_directory, train_out_dir, annotations_filename)
+VAL_OUT_ANNOTATIONS_PATH =  os.path.join(data_directory, val_out_dir, annotations_filename)
 
 # we need to do the same thing both for train and val set
-for path in [TRAIN_ANNOTATIONS_PATH, VAL_ANNOTATIONS_PATH]:
+for path_type, path in [("train", TRAIN_ANNOTATIONS_PATH), ("val", VAL_ANNOTATIONS_PATH)]:
 
     # directly load the dataset
     dataset = json.load(open(path, 'r'))
@@ -83,7 +85,10 @@ for path in [TRAIN_ANNOTATIONS_PATH, VAL_ANNOTATIONS_PATH]:
     for annotation in to_delete:
         dataset["annotations"].remove(annotation)
 
-    # UNCOMMENT WHEN READY
-    # with open(path, "w") as outfile:
-    #     json.dump(dataset, outfile)
-
+    # Save the new annotations file
+    if path_type == "train":
+        out_path = TRAIN_OUT_ANNOTATIONS_PATH
+    elif path_type == 'val':
+        out_path = VAL_OUT_ANNOTATIONS_PATH
+    with open(out_path, "w") as outfile:
+        json.dump(dataset, outfile)
