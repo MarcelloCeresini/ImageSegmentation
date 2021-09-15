@@ -457,7 +457,7 @@ def group_classes(accepted_ids:list, new_names:list):
         for element in accepted_ids[i]:
             my_dict = {}
             my_dict["old_id"] = element
-            my_dict["new_id"] = i
+            my_dict["new_id"] = i + 1 # 0 is reserved for the "background" class
             my_dict["new_name"] = new_names[i]
             class_ids.append(my_dict)
     return class_ids

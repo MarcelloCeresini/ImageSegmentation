@@ -131,10 +131,6 @@ class ModelConfig():
     # Number of classes in the dataset:
     NUM_CLASSES = 28+1    # The dataset has been modified to have 28 classes (+ background class)
 
-    # Since we will group some classes togheter (because of similarities), NUM_CLASSES will be higher than 
-    # the real number of classes that we will use, NUM_DIFFERENT_CLASSES
-    NUM_DIFFERENT_CLASSES = 0 # TODO: put the right number
-
     # Accepted classes ids, already in groups
     # Example: ACCEPTED_CLASSES_IDS = [[1040, 1026], [2512, 2504], .....]
     ACCEPTED_CLASSES_IDS = [[1151], [1056], [1154], [1724, 1730, 1728, 1727, 1731], \
