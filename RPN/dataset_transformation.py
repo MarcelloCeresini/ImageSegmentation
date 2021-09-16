@@ -72,6 +72,7 @@ for path_type, path in [("train", TRAIN_ANNOTATIONS_PATH), ("val", VAL_ANNOTATIO
 
     # exactly the same with annotations, but there is only the id that needs to be changed
     to_delete = []
+    total_annotations_num = len(dataset["annotations"])
     for annotation in dataset["annotations"]:
         my_dict = list(filter(lambda cat: cat['old_id'] == annotation["category_id"], old_new_ids))
         if not my_dict == []:
@@ -81,9 +82,14 @@ for path_type, path in [("train", TRAIN_ANNOTATIONS_PATH), ("val", VAL_ANNOTATIO
             # otherwise we will delete the category
             to_delete.append(annotation)
 
-    # not really sure we need to delete them, maybe better for speed
+    # remove these annotations from the dataset
     for annotation in to_delete:
         dataset["annotations"].remove(annotation)
+
+    deleted_annotations_num = len(to_delete)
+    print("In dataset of type {}, {} annotations have been deleted, so there are {}/{} annotations left".format(
+        path_type, deleted_annotations_num, total_annotations_num - deleted_annotations_num, total_annotations_num
+    ))
 
     # Save the new annotations file
     if path_type == "train":

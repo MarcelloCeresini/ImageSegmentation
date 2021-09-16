@@ -1176,7 +1176,7 @@ class MaskRCNN():
         # Find the last checkpoint
         checkpoints = sorted([x for x in os.listdir(dir_name) if 
                                 not os.path.isdir(x) and    # Must be a weight file
-                                x.startswith('rpn_food')])
+                                x.startswith('mask_rcnn_food')])
         # If there are no valid checkpoints:
         if not checkpoints:
             raise FileNotFoundError(
@@ -1202,8 +1202,8 @@ class MaskRCNN():
         if model_path:
             # Continue from we left of. Get epoch and date from the file name
             # A sample model path might look like:
-            # \path\to\logs\food20211029T2315\rpn_food_0001.h5 (Windows)
-            # /path/to/logs/food20211029T2315/rpn_food_0001.h5 (Linux)
+            # \path\to\logs\food20211029T2315\mask_rcnn_food_0001.h5 (Windows)
+            # /path/to/logs/food20211029T2315/mask_rcnn_food_0001.h5 (Linux)
             regex = r".*[/\\][\w-]+(\d{4})(\d{2})(\d{2})T(\d{2})(\d{2})[/\\]rpn\_food\_[\w-]+(\d{4})\.h5"
             m = re.match(regex, model_path)
             if m:
@@ -1219,7 +1219,7 @@ class MaskRCNN():
             'food', now))
 
         # Path to save after each epoch. Include a placeholder for the epoch that gets filled by Keras.
-        self.checkpoint_path = os.path.join(self.log_dir, "rpn_food_{epoch:04d}.h5")
+        self.checkpoint_path = os.path.join(self.log_dir, "mask_rcnn_food_{epoch:04d}.h5")
 
     def build(self):
         """
@@ -1448,12 +1448,10 @@ class MaskRCNN():
             bbox_loss = KL.Lambda(lambda x: mrcnn_bbox_loss_graph(*x), name="mrcnn_bbox_loss")(
                 [target_deltas, target_class_ids, mrcnn_deltas])
             
-            # TODO: does this other loss work??
             # 4. Compute mask loss
             mask_loss = KL.Lambda(lambda x: mrcnn_mask_loss_graph(*x), name="mrcnn_mask_loss")(
                 [target_mask, target_class_ids, mrcnn_mask])
 
-            # TODO: link losses to the model
             # Model
             inputs = [input_image, input_image_meta, input_rpn_match, input_rpn_bbox, 
                     input_gt_class_ids, input_gt_boxes, input_gt_masks]
