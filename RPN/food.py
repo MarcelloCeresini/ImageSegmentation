@@ -15,11 +15,8 @@ Usage: import the module or run from the command line as such:
 """
 
 import os
-import sys
 import time
-import zipfile
-import urllib.request
-import shutil
+from tqdm import tqdm
 import argparse
 
 import numpy as np
@@ -175,13 +172,13 @@ class FoodDataset():
                 width=coco.imgs[i]["width"],
                 height=coco.imgs[i]["height"],
                 annotations=coco.loadAnns(coco.getAnnIds(
-                    imgIds=[i], catIds=class_ids, iscrowd=None))) # TODO: Are we dealing with crowds?
+                    imgIds=[i], catIds=class_ids, iscrowd=None)))
         if return_coco:
             return coco
 
         # Save the coco object in the class
         self._coco = coco
-    
+
 
     def load_mask(self, image_id):
         """
@@ -229,10 +226,10 @@ class FoodDataset():
             return mask, class_ids
         else:
             # Call super class to return an empty mask
-            return self.create_empty_mask(image_id)
+            return self.create_empty_mask()
 
 
-    def create_empty_mask(self, image_id):
+    def create_empty_mask(self):
         """
         Creates an empty mask in case none could be loaded for the image ID.
         """
@@ -245,7 +242,6 @@ class FoodDataset():
         """
         Prepares the Dataset class for use.
         """
-
         def clean_name(name):
             """Returns a shorter version of object names for cleaner display."""
             return ",".join(name.split(",")[:1])
@@ -257,7 +253,6 @@ class FoodDataset():
         self.num_images = len(self.image_info)
         self._image_ids = np.arange(self.num_images)
 
-
     @property
     def image_ids(self):
         return self._image_ids
@@ -267,84 +262,80 @@ class FoodDataset():
 #  COCO Evaluation
 ############################################################
 
-# def build_coco_results(dataset, image_ids, rois, class_ids, scores, masks):
-#     """
-#     Arrange resutls to match COCO specs in http://cocodataset.org/#format
-#     """
-#     # If no results, return an empty list
-#     if rois is None:
-#         return []
+def format_bbox(bbox):
+    return [bbox[1], bbox[0], bbox[3] - bbox[1], bbox[2] - bbox[0]]
 
-#     results = []
-#     for image_id in image_ids:
-#         # Loop through detections
-#         for i in range(rois.shape[0]):
-#             class_id = class_ids[i]
-#             score = scores[i]
-#             bbox = np.around(rois[i], 1)
-#             mask = masks[:, :, i]
+def build_coco_results(image_ids, rois, class_ids, scores, masks):
+    """
+    Arrange results to match COCO specs in http://cocodataset.org/#format
+    """
+    # If no results, return an empty list
+    if rois is None:
+        return []
 
-#             result = {
-#                 "image_id": image_id,
-#                 "category_id": dataset.get_source_class_id(class_id, "coco"),
-#                 "bbox": [bbox[1], bbox[0], bbox[3] - bbox[1], bbox[2] - bbox[0]],
-#                 "score": score,
-#                 "segmentation": maskUtils.encode(np.asfortranarray(mask))
-#             }
-#             results.append(result)
-#     return results
+    results = [{
+            "image_id": image_id,
+            "category_id": class_ids[i],
+            "bbox": format_bbox(np.around(rois[i], 1)),
+            "score": scores[i],
+            "segmentation": maskUtils.encode(np.asfortranarray(masks[:, :, i]))
+        } 
+        for i in range(len(rois))
+        for image_id in image_ids 
+    ]
 
+    return results
 
-# def evaluate_coco(model, dataset, coco, eval_type="bbox", limit=0, image_ids=None):
-#     """Runs official COCO evaluation.
-#     dataset: A Dataset object with valiadtion data
-#     eval_type: "bbox" or "segm" for bounding box or segmentation evaluation
-#     limit: if not 0, it's the number of images to use for evaluation
-#     """
-#     # Pick COCO images from the dataset
-#     image_ids = image_ids or dataset.image_ids
+def evaluate_coco(model, dataset, coco, eval_type="bbox", limit=0, image_ids=None):
+    """Runs official COCO evaluation.
+    dataset: A Dataset object with valiadtion data
+    eval_type: "bbox" or "segm" for bounding box or segmentation evaluation
+    limit: if not 0, it's the number of images to use for evaluation
+    """
+    # Pick COCO images from the dataset
+    image_ids = image_ids or dataset.image_ids
 
-#     # Limit to a subset
-#     if limit:
-#         image_ids = image_ids[:limit]
+    # Limit to a subset
+    if limit:
+        image_ids = image_ids[:limit]
 
-#     # Get corresponding COCO image IDs.
-#     coco_image_ids = [dataset.image_info[id]["id"] for id in image_ids]
+    # Get corresponding COCO image IDs.
+    coco_image_ids = [dataset.image_info[id]["id"] for id in image_ids]
 
-#     t_prediction = 0
-#     t_start = time.time()
+    t_prediction = 0
+    t_start = time.time()
 
-#     results = []
-#     for i, image_id in enumerate(image_ids):
-#         # Load image
-#         image = dataset.load_image(image_id)
+    results = []
+    for i, image_id in enumerate(tqdm(image_ids)):
+        # Load image
+        image = dataset.load_image(image_id)
 
-#         # Run detection
-#         t = time.time()
-#         r = model.detect([image], verbose=0)[0]
-#         t_prediction += (time.time() - t)
+        # Run detection
+        t = time.time()
+        r = model.detect([image], verbose=0)[0]
+        t_prediction += (time.time() - t)
 
-#         # Convert model_dirresults to COCO format
-#         # Cast masks to uint8 because COCO tools errors out on bool
-#         image_results = build_coco_results(dataset, coco_image_ids[i:i + 1],
-#                                            r["rois"], r["class_ids"],
-#                                            r["scores"],
-#                                            r["masks"].astype(np.uint8))
-#         results.extend(image_results)
+        # Convert model_dirresults to COCO format
+        # Cast masks to uint8 because COCO tools errors out on bool
+        image_results = build_coco_results(coco_image_ids[i:i + 1],
+                                           r["rois"], r["class_ids"],
+                                           r["scores"],
+                                           r["masks"].astype(np.uint8))
+        results.extend(image_results)
 
-#     # Load results. This modifies results with additional attributes.
-#     coco_results = coco.loadRes(results)
+    # Load results. This modifies results with additional attributes.
+    coco_results = coco.loadRes(results)
 
-#     # Evaluate
-#     cocoEval = COCOeval(coco, coco_results, eval_type)
-#     cocoEval.params.imgIds = coco_image_ids
-#     cocoEval.evaluate()
-#     cocoEval.accumulate()
-#     cocoEval.summarize()
+    # Evaluate
+    coco_eval = COCOeval(coco, coco_results, eval_type)
+    coco_eval.params.imgIds = coco_image_ids
+    coco_eval.evaluate()
+    coco_eval.accumulate()
+    coco_eval.summarize()
 
-#     print("Prediction time: {}. Average {}/image".format(
-#         t_prediction, t_prediction / len(image_ids)))
-#     print("Total time: ", time.time() - t_start)
+    print("Prediction time: {}. Average {}/image".format(
+        t_prediction, t_prediction / len(image_ids)))
+    print("Total time: ", time.time() - t_start)
 
 
 ##################
@@ -393,17 +384,16 @@ if __name__ == '__main__':
 
     # Create model
     if args.command == "train":
-        rpn = MaskRCNN(mode="training", config=config,
+        mask_rcnn = MaskRCNN(mode="training", config=config,
                                   out_dir=args.logs)
     else:
-        rpn = MaskRCNN(mode="inference", config=config,
+        mask_rcnn = MaskRCNN(mode="inference", config=config,
                                   out_dir=args.logs)
 
     # Select weights file to load
-    # TODO: implement training code in new model
     if args.model.lower() == "last":
         # Find last trained weights
-        model_path = rpn.find_last()
+        model_path = mask_rcnn.find_last()
     elif args.model.lower() == "start":
         # Start from scratch (backbone is always trained on ImageNet)
         model_path = None
@@ -411,11 +401,11 @@ if __name__ == '__main__':
         model_path = args.model
 
     if model_path:
-        # Load weights into the model held within the RPN class
+        # Load weights into the model held within the MRCNN class
         print("Loading weights ", model_path)
-        rpn.model.load_weights(model_path)
+        mask_rcnn.model.load_weights(model_path)
         # Update the log dir
-        rpn.set_log_dir(model_path)
+        mask_rcnn.set_log_dir(model_path)
 
     # Train or evaluate
     if args.command == "train":
@@ -450,7 +440,7 @@ if __name__ == '__main__':
 
         # Fine tune all layers
         print("Fine tune all layers")
-        rpn.train(dataset_train, dataset_val,
+        mask_rcnn.train(dataset_train, dataset_val,
                     learning_rate=config.LEARNING_RATE,
                     epochs=60,                              # Start soft with 60 epochs
                     layers='heads',                         # training only the heads
@@ -464,10 +454,8 @@ if __name__ == '__main__':
         coco = dataset_val.load_food(args.dataset, 'val', return_coco=True)
         dataset_val.prepare()
 
-        raise NotImplementedError
-
-        # print("Running COCO evaluation on {} images.".format(args.limit))
-        # evaluate_coco(morpndel, dataset_val, coco, "bbox", limit=int(args.limit))        
+        print("Running COCO evaluation on {} images.".format(args.limit))
+        evaluate_coco(mask_rcnn, dataset_val, coco, "segm", limit=int(args.limit))        
 
     else:
         print("'{}' is not recognized. "
