@@ -960,7 +960,6 @@ class PyramidROIAlign(KL.Layer):
     def call(self, inputs):
         # Crop boxes [batch, num_boxes, (y1, x1, y2, x2)] in normalized coords
         boxes = inputs[0]
-
         # Holds details about the image
         input_image = inputs[1]
 
@@ -1147,9 +1146,11 @@ class MaskRCNN():
         self.out_dir = out_dir
         if mode == 'training':
             self.set_log_dir() # we could add that it should be able to restart from a checkpoint? 
-            # sels.set_log_dir(out_dir) # or something similar?
+            # sels.set_log_dir(out_dir) # or something similar?  
         # Instantiate self.model:
         self.build()
+        if mode == 'inference':
+          self.model.load_weights(out_dir)
         self.summary()
 
     def summary(self):

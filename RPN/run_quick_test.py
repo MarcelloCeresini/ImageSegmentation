@@ -32,7 +32,8 @@ if gpus:
         print(e)
 
 config = ModelConfig()
-model = MaskRCNN('inference', config)
+weights_path = os.path.join("..", "logs", "best_model", "rpn_weights_food.h5")
+model = MaskRCNN('inference', config, out_dir=weights_path)
 
 # Create the DataLoader to test it.
 if args.test_datagen and os.path.exists(os.path.join('..','data')):
@@ -98,7 +99,6 @@ for i in range(len(results)):
             linewidth=1, edgecolor='g', facecolor='none'
         )
         ax.add_patch(rect)
-    # TODO I HAVE NO IDEA HOW TO DRAW MASKS LOL
-    #for m in range(masks.shape[-1]):
-    #    ax.add_patch(m)
+    for m in range(masks.shape[-1]):
+        ax.imshow(m, interpolation="none", alpha=0.5)
     plt.show()
