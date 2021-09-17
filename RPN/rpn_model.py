@@ -1149,8 +1149,6 @@ class MaskRCNN():
             # sels.set_log_dir(out_dir) # or something similar?  
         # Instantiate self.model:
         self.build()
-        if mode == 'inference':
-          self.model.load_weights(out_dir)
         self.summary()
 
     def summary(self):
@@ -1165,7 +1163,7 @@ class MaskRCNN():
         """
         # Get directory names. Each directory corresponds to a model
         dir_names = sorted([x for x in os.listdir(self.out_dir) if 
-                        os.path.isdir(x) and 
+                        os.path.isdir(os.path.join(self.out_dir, x)) and 
                         x.startswith('food')])
         if not dir_names: # In case of empty list
             raise FileNotFoundError(
@@ -1219,7 +1217,7 @@ class MaskRCNN():
             'food', now))
 
         # Path to save after each epoch. Include a placeholder for the epoch that gets filled by Keras.
-        self.checkpoint_path = os.path.join(self.log_dir, "mask_rcnn_food_{epoch:04d}.h5")
+        self.checkpoint_path = os.path.join(self.log_dir, "mask_rcnn_food_{epoch:04d}-{val_global_loss:.2f}.h5")
 
     def build(self):
         """
@@ -1749,12 +1747,9 @@ class MaskRCNN():
         callbacks = [
             keras.callbacks.TensorBoard(log_dir=self.log_dir,
                                         histogram_freq=0, write_graph=True, write_images=False),
-            # TODO: We need a metric that is the sum or the average of all losses so that we
-            # can keep track of it for saving.
             keras.callbacks.ModelCheckpoint(self.checkpoint_path,
                                             monitor='val_global_loss',
-                                            verbose=0, save_weights_only=True,
-                                            save_best_only=True),
+                                            verbose=1, save_weights_only=True),
         ]
 
         if custom_callbacks is not None:

@@ -25,7 +25,7 @@ import imgaug  # For image augmentation
 
 from tensorflow import keras
 from pycocotools.coco import COCO
-from pycocotools.cocoeval import COCOeval
+from cocotools.cocoeval import COCOeval # A small fix has been made to COCOeval
 from pycocotools import mask as maskUtils
 
 from rpn_model import MaskRCNN
@@ -312,7 +312,7 @@ def evaluate_coco(model, dataset, coco, eval_type="bbox", limit=0, image_ids=Non
 
         # Run detection
         t = time.time()
-        r = model.detect([image], verbose=0)[0]
+        r = model.detect([image])[0]
         t_prediction += (time.time() - t)
 
         # Convert model_dirresults to COCO format
@@ -403,7 +403,7 @@ if __name__ == '__main__':
     if model_path:
         # Load weights into the model held within the MRCNN class
         print("Loading weights ", model_path)
-        mask_rcnn.model.load_weights(model_path)
+        mask_rcnn.model.load_weights(model_path, by_name=True)
         # Update the log dir
         mask_rcnn.set_log_dir(model_path)
 
@@ -426,9 +426,9 @@ if __name__ == '__main__':
 
         # TODO: define a better training schedule
         # Add a custom callback that reduces the learning rate during training
-        # after epoch 50
+        # after epoch 40
         def scheduler(epoch, lr):
-            if epoch < 50:
+            if epoch < 40:
                 return lr
             else:
                 # Divide lr by 10

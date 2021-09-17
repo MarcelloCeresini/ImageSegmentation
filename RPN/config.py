@@ -8,7 +8,7 @@ class ModelConfig():
     GPU_COUNT = 1 # TODO: Only 1 GPU is supported for now
 
     # Number of images to load on each GPU
-    IMAGES_PER_GPU = 1
+    IMAGES_PER_GPU = 2
 
     ### INPUT IMAGE RELATED CONSTANTS ###
 
@@ -103,20 +103,18 @@ class ModelConfig():
 
     # Number of training steps for each epoch. Defines the number of steps after which
     # we should make a validation step
-    STEPS_PER_EPOCH = 1000
+    STEPS_PER_EPOCH = 2000
 
     # Number of validation steps to run at the end of every training epoch.
     # A bigger number improves accuracy of validation stats, but slows
     # down the training.
-    VALIDATION_STEPS = 50
+    VALIDATION_STEPS = 200
 
     # Learning rate and momentum
     # The Mask RCNN paper uses lr=0.02, decreased to 0.002 after 120k iterations, 
     # but Matterport's implementation reduces this to 0.001 because in their opinion
     # Tensorflow's implementation of the used optimizer causes weights to explode. 
-    # For now, we set it at 0.002 following the decreased learning rate from the paper
-    # but also staying close to Matterport's implementation.
-    LEARNING_RATE = 0.002
+    LEARNING_RATE = 0.001
 
     # Momentum is 0.9 from the paper
     LEARNING_MOMENTUM = 0.9
