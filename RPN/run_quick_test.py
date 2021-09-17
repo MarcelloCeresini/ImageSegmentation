@@ -33,7 +33,17 @@ if gpus:
 
 config = ModelConfig()
 weights_path = os.path.join("..", "logs", "best_model", "rpn_weights_food.h5")
-model = MaskRCNN('inference', config, out_dir=weights_path)
+# Load model
+model = MaskRCNN('inference', config)
+# Load weights
+print("Loading weights...")
+# We use the load-by-name strategy because the training architecture
+# is different from the evaluation one. Namely, the DetectionTargetLayer
+# is only present in training, while the DetectionLayer is only present
+# for evaluation. Loading by name, we make sure to load the shared parts
+# between the models.
+model.model.load_weights(weights_path, by_name=True)
+print("Weights loaded.")
 
 # Create the DataLoader to test it.
 if args.test_datagen and os.path.exists(os.path.join('..','data')):
@@ -61,7 +71,7 @@ else:
 # }
 results = model.detect(img)
 
-RPN_BBOXES_TO_DRAW = 20
+RPN_BBOXES_TO_DRAW = 10
 
 # Show each image sequentially and draw a selection of "the best" RPN bounding boxes.
 for i in range(len(results)):
@@ -90,15 +100,25 @@ for i in range(len(results)):
     for bb in rnd_rpn_bboxes:
         rect = Rectangle(
             (bb[1], bb[0]), bb[3] - bb[1], bb[2] - bb[0],
-            linewidth=1, edgecolor='r', facecolor='none'
+            linewidth=1, edgecolor='r', facecolor='none', linestyle='--'
         )
         ax.add_patch(rect)
-    for bb in rois:
+    for m, bb in enumerate(rois):
         rect = Rectangle(
             (bb[1], bb[0]), bb[3] - bb[1], bb[2] - bb[0],
-            linewidth=1, edgecolor='g', facecolor='none'
+            linewidth=2, edgecolor='g', facecolor='none'
         )
         ax.add_patch(rect)
+        ax.text(bb[1]+15, bb[0], "{}: {:.2%}".format(
+                config.NEW_NAMES[classes[m]-1], # -1 to account for BG class
+                scores[m]), fontsize=8,
+                bbox={'facecolor': 'green', 
+                        'alpha': 0.5, 
+                        'pad': 5})
     for m in range(masks.shape[-1]):
-        ax.imshow(m, interpolation="none", alpha=0.5)
-    plt.show()
+        mask = masks[:,:,m]
+        # https://stackoverflow.com/questions/31877353/overlay-an-image-segmentation-with-numpy-and-matplotlib
+        masked_array = np.ma.masked_where(mask == False, mask)
+        ax.imshow(masked_array, interpolation="none", alpha=0.5)
+    # Save instead of showing if it does not work
+    fig.savefig('tests/test_{}.png'.format(i), bbox_inches='tight')
