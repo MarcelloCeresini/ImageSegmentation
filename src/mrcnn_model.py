@@ -1054,9 +1054,9 @@ class PyramidROIAlign(KL.Layer):
         return input_shape[0][:2] + self.pool_shape + (input_shape[2][-1], )
 
 
-#################
-### RPN CLASS ###
-#################
+###################
+### MRCNN CLASS ###
+###################
 
 class MaskRCNNModel(KM.Model):
     """
@@ -1200,9 +1200,9 @@ class MaskRCNN():
         if model_path:
             # Continue from we left of. Get epoch and date from the file name
             # A sample model path might look like:
-            # \path\to\logs\food20211029T2315\mask_rcnn_food_0001.h5 (Windows)
-            # /path/to/logs/food20211029T2315/mask_rcnn_food_0001.h5 (Linux)
-            regex = r".*[/\\][\w-]+(\d{4})(\d{2})(\d{2})T(\d{2})(\d{2})[/\\]rpn\_food\_[\w-]+(\d{4})\.h5"
+            # \path\to\logs\food20211029T2315\mask_rcnn_food_0001-#loss#.h5 (Windows)
+            # /path/to/logs/food20211029T2315/mask_rcnn_food_0001-#loss#.h5 (Linux)
+            regex = r".*[/\\][\w-]+(\d{4})(\d{2})(\d{2})T(\d{2})(\d{2})[/\\]mask\_rcnn\_food\_(\d{4})\-(\d{1})\.(\d{2})\.h5"
             m = re.match(regex, model_path)
             if m:
                 now = datetime.datetime(int(m.group(1)), int(m.group(2)), int(m.group(3)),

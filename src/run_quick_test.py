@@ -7,7 +7,7 @@ import matplotlib.pyplot as plt
 import matplotlib.image as mpimg
 from matplotlib.patches import Rectangle
 
-from rpn_model import MaskRCNN
+from mrcnn_model import MaskRCNN
 from food import FoodDataset
 from config import ModelConfig
 from data_generator import DataGenerator
@@ -32,7 +32,8 @@ if gpus:
         print(e)
 
 config = ModelConfig()
-weights_path = os.path.join("..", "logs", "best_model", "rpn_weights_food.h5")
+weights_path = os.path.join("..", "logs", "best_model", 
+                            "mask_rcnn_food_best_yet.h5")
 # Load model
 model = MaskRCNN('inference', config)
 # Load weights

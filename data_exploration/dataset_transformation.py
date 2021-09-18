@@ -2,8 +2,8 @@ import pylab
 import json
 import os
 
-import utils_functions as utils
-from config import ModelConfig
+import src.utils_functions as utils
+from src.config import ModelConfig
 
 config = ModelConfig()
 pylab.rcParams['figure.figsize'] = (8.0, 10.0)

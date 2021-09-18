@@ -1,6 +1,4 @@
-from numpy.lib.arraysetops import ediff1d
 from pycocotools.coco import COCO
-from pycocotools import mask as cocomask
 import numpy as np
 import skimage.io as io
 import matplotlib.pyplot as plt
@@ -11,15 +9,11 @@ import json
 from collections import Counter
 pylab.rcParams['figure.figsize'] = (8.0, 10.0)
 
-data_directory = "data/"
-annotation_file_template = "{}/{}/annotation{}.json"
+TRAIN_IMAGES_DIRECTORY = os.path.join("data","train","images")
+TRAIN_ANNOTATIONS_PATH = os.path.join("data","train","annotations.json")
 
-TRAIN_IMAGES_DIRECTORY = "data/train/images"
-TRAIN_ANNOTATIONS_PATH = "data/train/annotations.json"
-
-VAL_IMAGES_DIRECTORY = "data/val/images"
-VAL_ANNOTATIONS_PATH = "data/val/annotations.json"
-
+VAL_IMAGES_DIRECTORY = os.path.join("data","val","images")
+VAL_ANNOTATIONS_PATH = os.path.join("data","val","annotations.json")
 
 coco = COCO(TRAIN_ANNOTATIONS_PATH)
 

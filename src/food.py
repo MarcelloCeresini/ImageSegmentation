@@ -28,7 +28,7 @@ from pycocotools.coco import COCO
 from cocotools.cocoeval import COCOeval # A small fix has been made to COCOeval
 from pycocotools import mask as maskUtils
 
-from rpn_model import MaskRCNN
+from mrcnn_model import MaskRCNN
 from config import ModelConfig
 import utils_functions as utils
 
@@ -345,7 +345,7 @@ def evaluate_coco(model, dataset, coco, eval_type="bbox", limit=0, image_ids=Non
 def parse_args():
     # Parse command line arguments
     parser = argparse.ArgumentParser(
-        description='Train RPN on Food Dataset.')
+        description='Train MRCNN on Food Dataset.')
     parser.add_argument("command",
                         metavar="<command>",
                         choices=['train', 'evaluate'],
@@ -355,7 +355,7 @@ def parse_args():
                         help='Directory of the Food Recognition dataset')
     parser.add_argument('--model', required=True,
                         metavar="/path/to/weights.h5",
-                        help="Path to weights .h5 file or 'coco'")
+                        help="Path to weights .h5 file or 'start' or 'last'")
     parser.add_argument('--logs', required=False,
                         default=DEFAULT_LOGS_DIR,
                         metavar="/path/to/logs/",
@@ -428,7 +428,7 @@ if __name__ == '__main__':
         # Add a custom callback that reduces the learning rate during training
         # after epoch 40
         def scheduler(epoch, lr):
-            if epoch < 40:
+            if epoch < 30:
                 return lr
             else:
                 # Divide lr by 10
@@ -439,11 +439,11 @@ if __name__ == '__main__':
         ]
 
         # Fine tune all layers
-        print("Fine tune all layers")
+        print("Starting training...")
         mask_rcnn.train(dataset_train, dataset_val,
                     learning_rate=config.LEARNING_RATE,
-                    epochs=60,                              # Start soft with 60 epochs
-                    layers='heads',                         # training only the heads
+                    epochs=40,                              # Start with 30 epoch
+                    layers='5+',                            # Finetune from the 5th layer of the backbone up
                     augmentation=augmentation,
                     custom_callbacks=custom_callbacks)      # Add a custom callback that reduces the learning
                                                             # rate after some training steps.
