@@ -96,10 +96,6 @@ class DataGenerator(keras.utils.Sequence):
                 image, image_meta, gt_class_ids, gt_boxes, gt_masks = \
                     self.load_image_gts(image_id) 
 
-                # TODO: How many images that have none of the classes of interest 
-                # are there in the dataset? I mean, how many images are we cutting out
-                # from the original dataset?
-
                 # ##########################
                 # TODO: Techincally when the dataset in food.py, only images
                 # who have at least an element of one of the loaded classes match, so it
@@ -157,7 +153,6 @@ class DataGenerator(keras.utils.Sequence):
                 batch_image_meta[b] = image_meta
                 batch_rpn_match[b] = rpn_match[:, np.newaxis]
                 batch_rpn_bbox[b] = rpn_bbox
-                # TODO: Why is subtracting the mean pixel so important?
                 batch_images[b] = utils.normalize_image(image.astype(np.float32), self.config.MEAN_PIXEL) if \
                                     not self.dont_normalize else image
                 batch_gt_class_ids[b, :gt_class_ids.shape[0]] = gt_class_ids
@@ -276,7 +271,6 @@ class DataGenerator(keras.utils.Sequence):
         rpn_bbox = np.zeros((config.RPN_TRAIN_ANCHORS_PER_IMAGE, 4))
 
         # Handle COCO crowds
-        # TODO: Are we using crowds?
         # A crowd box in COCO is a bounding box around several instances. Exclude
         # them from training. A crowd box is given a negative class ID.
         # This is later handled by the model's anchors refinement mechanism.
@@ -396,7 +390,6 @@ class DataGenerator(keras.utils.Sequence):
         as many times as this len function returns: after that the epoch is considered
         finished, the on_epoch_end function is called and a new epoch starts.
         '''
-        # TODO: Multi GPU support?
         return int(np.floor(len(self.dataset.image_ids) / self.config.BATCH_SIZE))
 
     @property

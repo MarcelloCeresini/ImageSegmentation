@@ -37,7 +37,7 @@ import utils_functions as utils
 ###############
 
 # Root directory of the project
-ROOT_DIR = os.path.abspath("..") # TODO on final project, this will probably change.
+ROOT_DIR = os.path.abspath("..")
 
 # Path to trained weights file
 FOOD_WEIGHTS_MODEL_PATH = os.path.join(ROOT_DIR, "rpn_weights", "rpn_weights_food.h5")
@@ -426,7 +426,7 @@ if __name__ == '__main__':
 
         # TODO: define a better training schedule
         # Add a custom callback that reduces the learning rate during training
-        # after epoch 40
+        # after epoch 40 (only useful with SGD-like methods, not with Adadelta)
         def scheduler(epoch, lr):
             if epoch < 30:
                 return lr
@@ -435,14 +435,14 @@ if __name__ == '__main__':
                 return lr / 10
 
         custom_callbacks = [
-            keras.callbacks.LearningRateScheduler(scheduler)
+        #    keras.callbacks.LearningRateScheduler(scheduler)
         ]
 
         # Fine tune all layers
         print("Starting training...")
         mask_rcnn.train(dataset_train, dataset_val,
                     learning_rate=config.LEARNING_RATE,
-                    epochs=40,                              # Start with 30 epoch
+                    epochs=120,                            
                     layers='5+',                            # Finetune from the 5th layer of the backbone up
                     augmentation=augmentation,
                     custom_callbacks=custom_callbacks)      # Add a custom callback that reduces the learning

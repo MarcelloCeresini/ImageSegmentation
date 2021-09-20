@@ -424,7 +424,6 @@ class RefinementLayer(KL.Layer):
                                     name='top_anchors_by_score').indices
 
         # Reduce also scores and deltas tensors
-        # TODO: I changed this part a lot, check that tensors shapes are the same of the other code
         # Gather lets us index the scores array with a tensor of indices (top indexes).
         # Since we can have multiple images in our batch (scores and top_indexes are both
         # bi-dimensional array for this reason), batch_dims=1 tells the gather function to
@@ -565,7 +564,6 @@ class DetectionTargetLayer(KL.Layer):
         # We exclude them from training. To recognize them, we check
         # for negative class IDs, since that's what is assigned to crowds
         # (see the FoodDataset in food.py)
-        # TODO: is this actually good given our dataset?
         crowd_ix = tf.where(gt_class_ids < 0)[:,0]
         non_crowd_ix = tf.where(gt_class_ids > 0)[:, 0]
         crowd_boxes = tf.gather(gt_boxes, crowd_ix)
@@ -708,7 +706,6 @@ class DetectionTargetLayer(KL.Layer):
         masks = tf.squeeze(masks, axis=3)
         # Also, we want masks to be filled with 0 or 1 to use them in the binary crossentropy loss, 
         # so we need to threshold GT masks at 0.5
-        # TODO: talk about this
         masks = tf.round(masks)
 
         # Finally, we can produce the output:
@@ -1000,7 +997,6 @@ class PyramidROIAlign(KL.Layer):
             box_to_level.append(ix)
 
             # TODO: is it really needed?
-            # Why?? ##########################################
             # Stop gradient propogation to ROI proposals
             #level_boxes = tf.stop_gradient(level_boxes)
             #box_indices = tf.stop_gradient(box_indices)
@@ -1246,7 +1242,6 @@ class MaskRCNN():
         # (class IDs, bounding boxes and masks)
         if self.mode == 'training':
             # RPN
-            # TODO: What are these two inputs exactly?
             input_rpn_match = KL.Input(
                 shape=[None, 1], name='input_rpn_match', dtype=tf.int32
                 # TODO: can we use int8 or a boolean for optimization?
@@ -1343,8 +1338,6 @@ class MaskRCNN():
 
         if self.mode == 'training':
             # Anchors are not passed as input in training mode
-            # TODO: the mechanism that creates anchors needs to be fixed.
-            #       We should use multiscale anchors!!
             anchors = self.get_anchors(self.config.IMAGE_SHAPE)
             # As in the testing preparation code, anchors must be replicated
             # in the batch dimension
@@ -1356,7 +1349,6 @@ class MaskRCNN():
             # by running ops on it. Specific ops allow you to read and modify 
             # the values of this tensor.
             # Basically, we need a layer that yields a tensor containing the anchors
-            # TODO: Why not doing it with tensorflow directly?
             anchors = tf.Variable(anchors)
         elif self.mode == 'inference':
             # In testing mode, anchors are given as input to the network,
@@ -1439,7 +1431,6 @@ class MaskRCNN():
                 [self.config.BATCH_SIZE, input_rpn_bbox, input_rpn_match, rpn_deltas])
 
             # MRCNN LOSSES
-            # TODO: does this loss work??
             # 3. Compute classification and box losses (why do you use TARGET_CLASS_IDS and not MRCNN_CLASS?? TODO)
             class_loss = KL.Lambda(lambda x: mrcnn_class_loss_graph(*x), name="mrcnn_class_loss")(
                 [target_class_ids, mrcnn_class_logits])
@@ -1593,15 +1584,22 @@ class MaskRCNN():
         Compile the model for training. This means setting the optimizer,
         the losses, regularization and others so that we have a train-ready model.
 
-        # TODO: Documentation
+        Input:
+        - learning_rate: The starting learning rate for the training. Note that this
+            has no impact on methods which automatically detect the appropriate learning
+            rate for each step (like Adadelta), and also that it can be modified dynamically
+            with a Keras callback.
+        - momentum: The momentum parameter. Again, it might not be needed depending on
+            the chosen optimizer.
         '''
         # Optimizer
         # We choose classic SGD as an optimizer.
-        optimizer = keras.optimizers.SGD(
+        optimizer = keras.optimizers.Adadelta(
             learning_rate=learning_rate,
-            momentum=momentum,
+            # momentum=momentum, Adadelta does not need momentum
             clipnorm=self.config.GRADIENT_CLIP_NORM
         )
+
 
         # TODO: does it really need to be so complicated?
         losses = []
@@ -1650,7 +1648,6 @@ class MaskRCNN():
         self.model.compile(
             optimizer=optimizer
         )
-
     
     def set_trainable(self, layer_regex, indent=0, verbose=1):
         """Sets model layers as trainable if their names match
@@ -1718,7 +1715,7 @@ class MaskRCNN():
             with the keras fit_generator method. Must be list of type keras.callbacks.
         """
         assert self.mode == "training", "Create model in training mode."
-
+        
         # Select the layers to train using some regex
         layer_regex = {
             # all layers but the backbone
@@ -1743,7 +1740,7 @@ class MaskRCNN():
         os.makedirs(self.log_dir, exist_ok=True)
 
         # Callbacks
-        # TODO: Should we add other callbacks?
+        # Other callbacks can be added in food.py
         callbacks = [
             keras.callbacks.TensorBoard(log_dir=self.log_dir,
                                         histogram_freq=0, write_graph=True, write_images=False),
