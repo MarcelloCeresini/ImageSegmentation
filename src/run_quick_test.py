@@ -2,6 +2,8 @@ import tensorflow as tf
 import numpy as np
 import os
 import argparse
+import glob
+import random
 
 import matplotlib.pyplot as plt
 import matplotlib.image as mpimg
@@ -18,7 +20,13 @@ argp = argparse.ArgumentParser()
 argp.add_argument('--test_datagen', 
                     action='store_true', 
                     default=False, 
-                    help='Use this flag to test the DataGenerator')
+                    help='Use this flag to test the DataGenerator.\
+                        Note that visualization will be broken.')
+argp.add_argument('--random',
+                    action='store_true',
+                    default=False,
+                    help='Choose a random image from the \
+                        validation dataset')
 args = argp.parse_args()
 
 # GPU debugging
@@ -50,13 +58,19 @@ print("Weights loaded.")
 if args.test_datagen and os.path.exists(os.path.join('..','data')):
     # If we have the folder for the actual dataset (data, in the root folder), use it.
     dataset_val = FoodDataset()
-    dataset_val.load_food('../data', 'val_subset')
+    dataset_val.load_food('../data', 'val')
     dataset_val.prepare()
     dataset_generator = DataGenerator(dataset_val, config, shuffle=True, 
                             dont_normalize=True) # The network already does its preprocessing
     data_iterator = dataset_generator.iterator
     batch = next(data_iterator)
     img = batch[0][0] # Images are already normalized because they are in validation format.
+elif args.random and os.path.exists(os.path.join('..','data','val')):
+    img = [mpimg.imread(x) for x in 
+        random.sample(glob.glob(
+            os.path.join('..', 'data', 'val', 'images', '*')
+        ), 2)
+    ]
 else:
     # Test the detection with two images in the res folder
     img = [mpimg.imread('../res/006626.jpg'), mpimg.imread('../res/007675.jpg')]
