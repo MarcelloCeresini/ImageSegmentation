@@ -3,9 +3,25 @@ saved_model_big/
 saved_model/
 saved_models
 
+## data ##
+data
+data (copy)
+
 ## VIRTUAL ENVS ##
 env
+venv
+
+# TEMPORARY FILES
+*.pyc
+*__pycache__
 
 ## IDE STUFF ##
 .vscode
 .metals
+.idea
+
+## TESTING AREAS ##
+testing
+
+## TRAINING LOGS ##
+logs

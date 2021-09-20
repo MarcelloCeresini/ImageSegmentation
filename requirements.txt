@@ -1,5 +1,8 @@
-tensorflow
-tensorflow_datasets
-keras
+tensorflow==2.5.0
+tensorflow_datasets==4.4.0
 matplotlib
 scikit-image>=0.14
+ipykernel
+cython # Hard requirement for pycocotools
+git+https://github.com/AIcrowd/coco.git#subdirectory=PythonAPI # A branch fixing pycocotools for Python3
+imgaug # An optional module for image augmentation
