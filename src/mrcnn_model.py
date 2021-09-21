@@ -1425,7 +1425,7 @@ class MaskRCNN():
                 [self.config.BATCH_SIZE, input_rpn_bbox, input_rpn_match, rpn_deltas])
 
             # MRCNN LOSSES
-            # 3. Compute classification and box losses (why do you use TARGET_CLASS_IDS and not MRCNN_CLASS?? TODO)
+            # 3. Compute classification and box losses
             class_loss = KL.Lambda(lambda x: mrcnn_class_loss_graph(*x), name="mrcnn_class_loss")(
                 [target_class_ids, mrcnn_class_logits])
             bbox_loss = KL.Lambda(lambda x: mrcnn_bbox_loss_graph(*x), name="mrcnn_bbox_loss")(
@@ -1546,7 +1546,8 @@ class MaskRCNN():
             - image_shape: the shape of the input image
         
         Outputs:
-            - #TODO fill this with the output shape
+            - anchors: [N, (y1,x1,y2,x2)], where N is the total number of all the anchors
+            of all the feature maps in the FPN
         """
         backbone_shapes = np.array([
             [int(math.ceil(image_shape[0] / stride)),
@@ -1587,17 +1588,14 @@ class MaskRCNN():
             the chosen optimizer.
         '''
         # Optimizer
-        # We choose classic SGD as an optimizer.
+        # We choose classic SGD as an optimizer, and then tried fine tuning with Adadelta.
         optimizer = keras.optimizers.Adadelta(
             learning_rate=learning_rate,
-            # momentum=momentum, Adadelta does not need momentum
+            # momentum=momentum # Adadelta does not need momentum
             clipnorm=self.config.GRADIENT_CLIP_NORM
         )
 
-
-        # TODO: does it really need to be so complicated?
         losses = []
-
         # Add losses
         loss_names = ["rpn_class_loss",  "rpn_bbox_loss", 
                     "mrcnn_class_loss", "mrcnn_bbox_loss", 
