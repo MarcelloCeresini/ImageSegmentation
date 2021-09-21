@@ -5,7 +5,7 @@ class ModelConfig():
     NAME = 'food_detection'
 
     # Number of GPUs to be used
-    GPU_COUNT = 1 # TODO: Only 1 GPU is supported for now
+    GPU_COUNT = 1
 
     # Number of images to load on each GPU
     IMAGES_PER_GPU = 2
