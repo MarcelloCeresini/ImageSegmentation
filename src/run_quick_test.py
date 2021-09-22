@@ -7,6 +7,7 @@ import random
 import skimage.io as io
 import matplotlib.pyplot as plt
 import matplotlib.image as mpimg
+from matplotlib import cm
 from matplotlib.patches import Rectangle
 
 from mrcnn_model import MaskRCNN
@@ -136,8 +137,9 @@ for i in range(len(results)):
         # https://stackoverflow.com/questions/31877353/overlay-an-image-segmentation-with-numpy-and-matplotlib
         masked_array = np.ma.masked_where(mask == False, mask)
         # Assign a color
-        masked_array = masked_array.astype(np.int16) * classes[m]
-        ax.imshow(masked_array, cmap='tab20', interpolation="none", alpha=0.5)
+        masked_array = masked_array.astype(np.int16) * classes[m] / config.NUM_CLASSES
+        cmap = cm.get_cmap('tab20', config.NUM_CLASSES)
+        ax.imshow(cmap(masked_array), interpolation="none", alpha=0.4)
     # Save instead of showing if it does not work
     fig.savefig('tests/test_{}.png'.format(i), bbox_inches='tight')
     io.imsave('tests/test_original_{}.png'.format(i), image)
