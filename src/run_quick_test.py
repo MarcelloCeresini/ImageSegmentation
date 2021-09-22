@@ -4,7 +4,7 @@ import os
 import argparse
 import glob
 import random
-
+import skimage.io as io
 import matplotlib.pyplot as plt
 import matplotlib.image as mpimg
 from matplotlib.patches import Rectangle
@@ -115,7 +115,8 @@ for i in range(len(results)):
     for bb in rnd_rpn_bboxes:
         rect = Rectangle(
             (bb[1], bb[0]), bb[3] - bb[1], bb[2] - bb[0],
-            linewidth=1, edgecolor='r', facecolor='none', linestyle='--'
+            linewidth=1, edgecolor='r', facecolor='none', linestyle='--',
+            alpha=0.5
         )
         ax.add_patch(rect)
     for m, bb in enumerate(rois):
@@ -134,6 +135,9 @@ for i in range(len(results)):
         mask = masks[:,:,m]
         # https://stackoverflow.com/questions/31877353/overlay-an-image-segmentation-with-numpy-and-matplotlib
         masked_array = np.ma.masked_where(mask == False, mask)
-        ax.imshow(masked_array, interpolation="none", alpha=0.5)
+        # Assign a color
+        masked_array = masked_array.astype(np.int16) * classes[m]
+        ax.imshow(masked_array, cmap='tab20', interpolation="none", alpha=0.5)
     # Save instead of showing if it does not work
     fig.savefig('tests/test_{}.png'.format(i), bbox_inches='tight')
+    io.imsave('tests/test_original_{}.png'.format(i), image)

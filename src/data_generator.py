@@ -373,8 +373,7 @@ class DataGenerator(keras.utils.Sequence):
                 np.log(gt_w / a_w),
             ]
             # Normalize
-            # TODO: We are not doing this in our code (should we?)
-            # rpn_bbox[ix] /= config.RPN_BBOX_STD_DEV
+            rpn_bbox[ix] /= config.RPN_BBOX_STD_DEV
             ix += 1
 
         return rpn_match, rpn_bbox

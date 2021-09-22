@@ -428,22 +428,22 @@ if __name__ == '__main__':
         # Add a custom callback that reduces the learning rate during training
         # after epoch 40 (only useful with SGD-like methods, not with Adadelta)
         def scheduler(epoch, lr):
-            if epoch < 30:
+            if epoch < 170:
                 return lr
             else:
                 # Divide lr by 10
                 return lr / 10
 
         custom_callbacks = [
-        #    keras.callbacks.LearningRateScheduler(scheduler)
+            keras.callbacks.LearningRateScheduler(scheduler)
         ]
 
         # Fine tune all layers
         print("Starting training...")
         mask_rcnn.train(dataset_train, dataset_val,
                     learning_rate=config.LEARNING_RATE,
-                    epochs=120,                            
-                    layers='5+',                            # Finetune from the 5th layer of the backbone up
+                    epochs=200,                            
+                    layers='heads',                         # Finetune from the 5th layer of the backbone up
                     augmentation=augmentation,
                     custom_callbacks=custom_callbacks)      # Add a custom callback that reduces the learning
                                                             # rate after some training steps.

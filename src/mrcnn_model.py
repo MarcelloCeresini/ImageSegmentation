@@ -158,12 +158,12 @@ def build_rpn_model(anchor_stride, anchors_per_location, depth):
     foreground and background)
 
     Outputs:
-        - a Keras Model, which itself outputs:
-            - rpn_class_logits: [batch, H * W * anchors_per_location, 2]
-                Anchor classifier logits (before softmax)
-            - rpn_probs: [batch, H * W * anchors_per_location, 2] Anchor classifier probabilities.
-            - rpn_deltas: [batch, H * W * anchors_per_location, (dy, dx, log(dh), log(dw))] Deltas to be
-                        applied to anchors.
+    - a Keras Model, which itself outputs:
+        - rpn_class_logits: [batch, H * W * anchors_per_location, 2]
+            Anchor classifier logits (before softmax)
+        - rpn_probs: [batch, H * W * anchors_per_location, 2] Anchor classifier probabilities.
+        - rpn_deltas: [batch, H * W * anchors_per_location, (dy, dx, log(dh), log(dw))] Deltas to be
+                    applied to anchors.
     """
     input_feature_map = KL.Input(shape=[None, None, depth],
                                  name='input_rpn_feature_map')
@@ -409,7 +409,7 @@ class RefinementLayer(KL.Layer):
         # precomputed or made up: the important thing is that they are kept consistent
         # within testing and training.
         # Uncomment and define a global constant keeping the STD_DEVs if needed.
-        # deltas *= np.reshape(np.array([0.1, 0.1, 0.2, 0.2]), [1, 1, 4])
+        deltas *= np.reshape(self.config.RPN_BBOX_STD_DEV, [1, 1, 4])
 
         # Anchors
         anchors = inputs[2]
@@ -590,7 +590,7 @@ class DetectionTargetLayer(KL.Layer):
 
         ## ASSIGNING FG/BG INDEX ##
 
-        # Now, remember that some RoIs from the RPN are positive while some are negative.
+        # Now, remember that some bounding boxes are positive while some are negative.
         # We must determine which are which in the same way as above:
         # 1: Get the best IoU from each row
         roi_iou_max = tf.reduce_max(overlaps, axis=1)
@@ -607,7 +607,7 @@ class DetectionTargetLayer(KL.Layer):
 
         # "It is possible to optimize
         # for the loss functions of all anchors, but this will
-        # bias towards negative samples as they are dominate.
+        # bias towards negative samples as they dominate.
         # Instead, we randomly sample 256 anchors in an image
         # to compute the loss function of a mini-batch, where
         # the sampled positive and negative anchors have a
@@ -680,8 +680,7 @@ class DetectionTargetLayer(KL.Layer):
         deltas = tf.stack([dy, dx, dh, dw], axis=1)
 
         # Again, the deltas get divided by the STDEV in Matterport's implementation.
-        # TODO: decide if it's a good idea
-        # deltas /= config.BBOX_STD_DEV
+        deltas /= self.config.BBOX_STD_DEV
 
         ## ASSOCIATE OBJECT MASKS TO PROPOSALS ##
 
@@ -838,7 +837,7 @@ class DetectionLayer(KL.Layer):
         # Shape: [1, boxes, (y1, x1, y2, x2)] in normalized coordinates
         refined_rois = apply_box_deltas_batched(
             tf.expand_dims(rois, axis=0), 
-            tf.expand_dims(deltas_specific, axis=0) #* config.BBOX_STD_DEV)
+            tf.expand_dims(deltas_specific, axis=0) * self.config.BBOX_STD_DEV
         )
         # Clip boxes to image window
         refined_rois = tf.squeeze(clip_boxes_batched(
@@ -1431,13 +1430,13 @@ class MaskRCNN():
                 [self.config.BATCH_SIZE, input_rpn_bbox, input_rpn_match, rpn_deltas])
 
             # MRCNN LOSSES
-            # 3. Compute classification and box losses (why do you use TARGET_CLASS_IDS and not MRCNN_CLASS?? TODO)
+            # 3. Compute classification loss
             class_loss = KL.Lambda(lambda x: mrcnn_class_loss_graph(*x), name="mrcnn_class_loss")(
                 [target_class_ids, mrcnn_class_logits])
+            # 4. Compute bounding box regression loss
             bbox_loss = KL.Lambda(lambda x: mrcnn_bbox_loss_graph(*x), name="mrcnn_bbox_loss")(
                 [target_deltas, target_class_ids, mrcnn_deltas])
-            
-            # 4. Compute mask loss
+            # 5. Compute mask loss
             mask_loss = KL.Lambda(lambda x: mrcnn_mask_loss_graph(*x), name="mrcnn_mask_loss")(
                 [target_mask, target_class_ids, mrcnn_mask])
 
@@ -1594,9 +1593,10 @@ class MaskRCNN():
         '''
         # Optimizer
         # We choose classic SGD as an optimizer.
-        optimizer = keras.optimizers.Adadelta(
+        optimizer = keras.optimizers.SGD(
             learning_rate=learning_rate,
-            # momentum=momentum, Adadelta does not need momentum
+            nesterov=True,
+            momentum=momentum, # Adadelta does not need momentum
             clipnorm=self.config.GRADIENT_CLIP_NORM
         )
 
