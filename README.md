@@ -39,9 +39,9 @@ The code in the `data_exploration` directory was used to analyze and prune the d
 Firstly, install all requirements. We recommend creating a virtual Python environment:
 
 ```bash
-python -m venv env
+python3 -m venv env
 source env/bin/activate
-python -m pip install -r requirements.txt
+python3 -m pip install -r requirements.txt
 ```
 
 ### Quick test
