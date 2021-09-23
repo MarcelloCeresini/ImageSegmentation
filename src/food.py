@@ -422,11 +422,7 @@ if __name__ == '__main__':
         # Image Augmentation
         # Right/Left flip 50% of the time
         augmentation = imgaug.augmenters.Fliplr(0.5)
-        # TODO we could add other kinds of image augmentations here
 
-        # TODO: define a better training schedule
-        # Add a custom callback that reduces the learning rate during training
-        # after epoch 40 (only useful with SGD-like methods, not with Adadelta)
         def scheduler(epoch, lr):
             if epoch < 170:
                 return lr

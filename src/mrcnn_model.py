@@ -1,6 +1,3 @@
-# TODO: Fix some comments in functions (mostly add output shapes and stuff)
-# TODO: Possibly change the way some layers/functions work
-
 import math
 import numpy as np
 import re
@@ -990,8 +987,7 @@ class PyramidROIAlign(KL.Layer):
             # Keep track of which box is mapped to which level
             box_to_level.append(ix)
 
-            # TODO: is it really needed?
-            # Stop gradient propagation to ROI proposals
+            # TODO: Stop gradient propagation to ROI proposals
             #level_boxes = tf.stop_gradient(level_boxes)
             #box_indices = tf.stop_gradient(box_indices)
 
@@ -1601,8 +1597,6 @@ class MaskRCNN():
                     "mrcnn_class_loss", "mrcnn_bbox_loss", 
                     "mrcnn_mask_loss"]
         for name in loss_names:
-            # TODO: some commits ago I removed the reset of losses because of errors with the training.
-            #       Reapply this (if needed).
             # Retrieve the loss layer from the model
             layer = self.model.get_layer(name)
             # Apply mean within the batch
@@ -1633,7 +1627,6 @@ class MaskRCNN():
 
         # We add an additional metric that simply tracks the sum of all losses,
         # so that we can use it for "saving the best models". 
-        # TODO: instead of a simple sum, we might use a weighted sum?
         self.model.add_metric(tf.math.reduce_sum(losses), name='global_loss')
 
         # Compile the model
