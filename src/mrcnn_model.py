@@ -987,10 +987,6 @@ class PyramidROIAlign(KL.Layer):
             # Keep track of which box is mapped to which level
             box_to_level.append(ix)
 
-            # TODO: Stop gradient propagation to ROI proposals
-            #level_boxes = tf.stop_gradient(level_boxes)
-            #box_indices = tf.stop_gradient(box_indices)
-
             # Crop and Resize
             # From Mask R-CNN paper: "We sample four regular locations, so
             # that we can evaluate either max or average pooling. In fact,
