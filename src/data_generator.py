@@ -75,11 +75,6 @@ class DataGenerator(keras.utils.Sequence):
             config.RPN_ANCHOR_STRIDE
         )
 
-        # Flatten the list of accepted classes. 
-        # Save the result, so we only compute it once.
-        # TODO: read below: we may not need this.
-        # self.accepted_classes = utils.flatten(self.config.ACCEPTED_CLASSES_IDS)
-
         self.on_epoch_end()
 
     def __getitem__(self, index):
@@ -95,26 +90,6 @@ class DataGenerator(keras.utils.Sequence):
 
                 image, image_meta, gt_class_ids, gt_boxes, gt_masks = \
                     self.load_image_gts(image_id) 
-
-                # ##########################
-                # TODO: Techincally when the dataset in food.py, only images
-                # who have at least an element of one of the loaded classes match, so it
-                # shouldn't be necessary to add this test here.
-                # Anyway, we can't do it this way, because we could potentially 
-                # yield empty batches.
-                # Skip images that have no instances. This can happen in cases
-                # where we train on a subset of classes and the image doesn't
-                # have any of the classes we care about.
-                #if not np.any(gt_class_ids > 0):
-                #    continue
-                # We only want images with accepted classes, we do not keep all classes
-                # So we also skip images that do not contain any annotation that we accepted
-                # "set" is used because intersection is a method of the set class
-                # "flatten" takes a nested list and flattens it
-                #intersection = set(gt_class_ids).intersection(self.accepted_classes)
-                #if intersection == set():
-                #    continue
-                ###########################
             
                 # RPN targets
                 rpn_match, rpn_bbox = self.build_rpn_targets(self.anchors,

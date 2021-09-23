@@ -215,13 +215,11 @@ def fpn_classifier_graph(rois, feature_maps, input_image,
     shared = KL.Lambda(lambda x: K.squeeze(K.squeeze(x, 3), 2),
                        name="pool_squeeze")(x)
 
-    # Classifier head TODO change dense layer maybe?
     mrcnn_class_logits = KL.TimeDistributed(KL.Dense(num_classes),
                                             name='mrcnn_class_logits')(shared)
     mrcnn_probs = KL.TimeDistributed(KL.Activation("softmax"),
                                      name="mrcnn_class")(mrcnn_class_logits)
 
-    # BBox head TODO change dense layer maybe?
     # [batch, num_rois, NUM_CLASSES * (dy, dx, log(dh), log(dw))]
     x = KL.TimeDistributed(KL.Dense(num_classes * 4, activation='linear'),
                            name='mrcnn_bbox_fc')(shared)
@@ -251,7 +249,6 @@ def fpn_mask_graph(rois, feature_maps, input_image,
     x = PyramidROIAlign([pool_size, pool_size],
                         name="roi_align_mask")([rois, input_image] + feature_maps)
 
-    # Conv layers TODO improvable? doesn't seem a really good NN
     # 1
     x = KL.TimeDistributed(KL.Conv2D(256, (3, 3), padding="same"),
                            name="mrcnn_mask_conv1")(x)
@@ -823,8 +820,6 @@ class DetectionLayer(KL.Layer):
         Returns detections shaped: [num_detections, (y1, x1, y2, x2, class_id, score)] where
             coordinates are normalized.
         """
-        # TODO: can this function be rewritten to deal with batches automatically?
-
         # Class IDs per ROI
         class_ids = tf.math.argmax(probs, axis=1, output_type=tf.int32)
         # Class probability of the top class of each ROI
@@ -996,7 +991,7 @@ class PyramidROIAlign(KL.Layer):
             box_to_level.append(ix)
 
             # TODO: is it really needed?
-            # Stop gradient propogation to ROI proposals
+            # Stop gradient propagation to ROI proposals
             #level_boxes = tf.stop_gradient(level_boxes)
             #box_indices = tf.stop_gradient(box_indices)
 
@@ -1243,7 +1238,6 @@ class MaskRCNN():
             # RPN
             input_rpn_match = KL.Input(
                 shape=[None, 1], name='input_rpn_match', dtype=tf.int32
-                # TODO: can we use int8 or a boolean for optimization?
             )
             input_rpn_bbox = KL.Input(
                 shape=[None, 4], name='input_rpn_bbox', dtype=tf.float32
@@ -1430,7 +1424,7 @@ class MaskRCNN():
                 [self.config.BATCH_SIZE, input_rpn_bbox, input_rpn_match, rpn_deltas])
 
             # MRCNN LOSSES
-            # 3. Compute classification loss
+            # 3. Compute classification and box losses
             class_loss = KL.Lambda(lambda x: mrcnn_class_loss_graph(*x), name="mrcnn_class_loss")(
                 [target_class_ids, mrcnn_class_logits])
             # 4. Compute bounding box regression loss
@@ -1551,7 +1545,8 @@ class MaskRCNN():
             - image_shape: the shape of the input image
         
         Outputs:
-            - #TODO fill this with the output shape
+            - anchors: [N, (y1,x1,y2,x2)], where N is the total number of all the anchors
+            of all the feature maps in the FPN
         """
         backbone_shapes = np.array([
             [int(math.ceil(image_shape[0] / stride)),
@@ -1600,10 +1595,7 @@ class MaskRCNN():
             clipnorm=self.config.GRADIENT_CLIP_NORM
         )
 
-
-        # TODO: does it really need to be so complicated?
         losses = []
-
         # Add losses
         loss_names = ["rpn_class_loss",  "rpn_bbox_loss", 
                     "mrcnn_class_loss", "mrcnn_bbox_loss", 

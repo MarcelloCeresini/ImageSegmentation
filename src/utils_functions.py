@@ -45,7 +45,7 @@ def generate_anchors(scales, ratios, shape, feature_stride, anchor_stride):
             value is 2 then generate anchors for every other feature map pixel.
     
     Outputs:
-        - boxes: #TODO: add the shape of this output list
+        - boxes: [shape*shape, (y1,x1,y2,x2)], all the boxes in all the points of the feature map
     """
     # Get all possible combinations of scales and ratios
     scales, ratios = np.meshgrid(np.array(scales), np.array(ratios))
