@@ -54,11 +54,17 @@ The output images will be saved in `src/tests`.
 
 ### Training
 
-TODO: download best weights from Google Drive
+Our weights can be downloaded from [here](https://drive.google.com/file/d/1w48FQA18yyqXySnX4J2_eji21AX7posH/view) and they should be saved as `logs/best_model/mask_rcnn_food_best_yet.h5`. Then, to run training:
 
 ```bash
 cd src
 python3 food.py train --data=../data --model=PATH_TO_MODEL
+```
+Or if you want to start from epoch 0:
+
+```bash
+cd src
+python3 food.py train --data=../data --model=start
 ```
 
 ### COCO Evaluation
