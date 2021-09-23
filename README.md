@@ -4,7 +4,7 @@
 
 ## Overview
 
-This repository holds the code and other materials for the exam project by **Federico Cichetti** (@volpepe) and **Marcello Ceresini** (@MarcelloCeresini) of the **Deep Learning 2020/2021** course in the Artificial Intelligence master course at Alma Mater Studiorum - University of Bologna. 
+This repository holds the code and other materials for the exam project by **Federico Cichetti** (@volpepe) and **Marcello Ceresini** (@MarcelloCeresini) of the **Deep Learning 2020/2021** course in the Artificial Intelligence master at Alma Mater Studiorum - University of Bologna. 
 
 The project is a solution to the [Food Recognition Challenge](https://www.aicrowd.com/challenges/food-recognition-challenge), a challenge aimed at building **image segmentation** models for detecting and classifying various kinds of food present in pictures.
 
@@ -16,7 +16,7 @@ We implemented our solution using **Python 3** and mainly **Keras** and **Tensor
 
 The `data` directory contains a txt file with links to the original dataset to be downloaded. At least the training and validation sets should be downloaded and saved as `train_original` and `val_original`, each folder containing the `annotations.json` file and the folder of images from the dataset.
 
-The code in the `data_exploration` directory was used to analyse and prune the dataset. In particular, `dataset_transformation.py` can be used to create the final `train` and `val` folders used in training and evaluation in our code. Note that as a final passage, the `images` folder from `val_original` and `train_original` should be copied or moved to `train` and `val` respectively, or a symbolic link should be created with `ln -s data/train_original/images data/train/images` (*bash only*).
+The code in the `data_exploration` directory was used to analyze and prune the dataset. In particular, `dataset_transformation.py` can be used to create the final `train` and `val` folders used in training and evaluation in our code. Note that as a final passage, the `images` folder from `val_original` and `train_original` should be copied or moved to `train` and `val` respectively, or a symbolic link should be created with `ln -s data/train_original/images data/train/images` (*bash only*).
 
 `data_exploration/graphs` also contains the results of our analysis on the original dataset in the form of graphs. A more extensive analysis of the dataset is provided in the report.
 
@@ -32,11 +32,11 @@ The code in the `data_exploration` directory was used to analyse and prune the d
 
 - `report.pdf` contains the report for the project.
 
-- The `res` folder contains some images for testing.
+- The `res` folder contains some sample images from the dataset.
 
 ## Instructions
 
-We recommend creating a virtual Python environment:
+Firstly, install all requirements. We recommend creating a virtual Python environment:
 
 ```bash
 python -m venv env
@@ -60,7 +60,7 @@ Our weights can be downloaded from [here](https://drive.google.com/file/d/1w48FQ
 cd src
 python3 food.py train --data=../data --model=PATH_TO_MODEL
 ```
-Or if you want to start from epoch 0:
+Or, if you want to start from the first epoch:
 
 ```bash
 cd src
