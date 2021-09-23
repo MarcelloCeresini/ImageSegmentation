@@ -1,5 +1,7 @@
 # Food Recognition Challenge
 
+![Output Image](res/example/sample.png)
+
 ## Overview
 
 This repository holds the code and other materials for the exam project by **Federico Cichetti** (@volpepe) and **Marcello Ceresini** (@MarcelloCeresini) of the **Deep Learning 2020/2021** course in the Artificial Intelligence master course at Alma Mater Studiorum - University of Bologna. 
@@ -28,11 +30,9 @@ The code in the `data_exploration` directory was used to analyse and prune the d
     - `utils_functions.py` contains some utility functions.
     - `run_quick_test.py` is an execution-ready script for testing purposes containing the code for loading weights and displaying the output of our model on two images from the dataset.
 
-- `report.pdf` contains the report for the project. TODO.
+- `report.pdf` contains the report for the project.
 
 - The `res` folder contains some images for testing.
-
-- The `misc` folder contains some miscellaneous scripts and tests we have done that are not strictly related to the project.
 
 ## Instructions
 
