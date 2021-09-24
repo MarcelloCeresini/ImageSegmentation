@@ -18,7 +18,7 @@ The `data` directory contains a txt file with links to the original dataset to b
 
 The code in the `data_exploration` directory was used to analyze and prune the dataset. In particular, `dataset_transformation.py` can be used to create the final `train` and `val` folders used in training and evaluation in our code. Note that as a final passage, the `images` folder from `val_original` and `train_original` should be copied or moved to `train` and `val` respectively, or a symbolic link should be created with `ln -s data/train_original/images data/train/images` (*bash only*).
 
-`data_exploration/graphs` also contains the results of our analysis on the original dataset in the form of graphs. A more extensive analysis of the dataset is provided in the report.
+`data_exploration/graphs` also contains the results of our analysis on the original dataset in the form of graphs. A more extensive analysis of the dataset is provided in the report, while the spreadsheet `data_exploration/dataset_analysis.ods` shows how we grouped together the original classes from the dataset.
 
 ## Structure
 
